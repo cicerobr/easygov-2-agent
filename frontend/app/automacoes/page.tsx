@@ -21,6 +21,7 @@ import {
     CheckCircle2,
     AlertCircle,
 } from "lucide-react";
+import { ConfirmModal } from "@/components/confirm-modal";
 
 export default function AutomacoesPage() {
     const [automations, setAutomations] = useState<Automation[]>([]);
@@ -29,6 +30,7 @@ export default function AutomacoesPage() {
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [runs, setRuns] = useState<Record<string, AutomationRun[]>>({});
     const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
+    const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
     useEffect(() => {
         loadAutomations();
@@ -49,8 +51,13 @@ export default function AutomacoesPage() {
     }
 
     async function deleteAutomation(id: string) {
-        if (!confirm("Deseja realmente excluir esta automação e todos os seus resultados?")) return;
-        await api.deleteAutomation(id);
+        setDeleteConfirmId(id);
+    }
+
+    async function confirmDelete() {
+        if (!deleteConfirmId) return;
+        await api.deleteAutomation(deleteConfirmId);
+        setDeleteConfirmId(null);
         loadAutomations();
     }
 
@@ -280,6 +287,32 @@ export default function AutomacoesPage() {
                     ))}
                 </div>
             )}
+            {/* Create Form Modal */}
+            {showForm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowForm(false)} />
+                    <div className="relative bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-in zoom-in-95" style={{ background: "var(--color-bg-primary)" }}>
+                        <div className="p-6">
+                            <CreateForm
+                                onSubmit={handleCreate}
+                                onCancel={() => setShowForm(false)}
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Confirm Delete Modal */}
+            <ConfirmModal
+                isOpen={!!deleteConfirmId}
+                title="Excluir Automação"
+                message="Deseja realmente excluir esta automação e todos os seus resultados? Esta ação não pode ser desfeita."
+                confirmLabel="Excluir"
+                cancelLabel="Manter"
+                onConfirm={confirmDelete}
+                onCancel={() => setDeleteConfirmId(null)}
+                variant="danger"
+            />
         </div>
     );
 }
