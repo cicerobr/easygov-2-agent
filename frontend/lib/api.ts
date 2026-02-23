@@ -303,7 +303,7 @@ export const api = {
         apiFetch<EditalAnalysis>(`/analysis/${id}`),
 
     getAnalysisByResultId: (resultId: string) =>
-        apiFetch<EditalAnalysis>(`/analysis/by-result/${resultId}`),
+        apiFetch<EditalAnalysis | null>(`/analysis/by-result/${resultId}`),
 
     deleteAnalysis: (id: string) =>
         apiFetch<{ ok: boolean }>(`/analysis/${id}`, { method: "DELETE" }),
@@ -311,4 +311,3 @@ export const api = {
     getAnalysisStats: () =>
         apiFetch<AnalysisStats>("/analysis/stats"),
 };
-

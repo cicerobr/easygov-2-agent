@@ -6,25 +6,19 @@ import {
     ArrowLeft,
     Building2,
     Calendar,
-    MapPin,
-    Tag,
     FileText,
     Package,
     Download,
     ExternalLink,
     Bookmark,
     Trash2,
-    Clock,
     DollarSign,
-    Hash,
     Info,
     ShieldCheck,
     Scale,
     Loader2,
     AlertCircle,
-    Box,
     ChevronRight,
-    Bot,
 } from "lucide-react";
 import { api, SearchResultDetail, ResultItem, ResultDocument } from "@/lib/api";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
@@ -549,21 +543,6 @@ function DocumentsTab({
     anoCompra: number;
     sequencialCompra: number;
 }) {
-    const router = useRouter();
-    const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null);
-
-    async function handleAnalyze(docId: string) {
-        setAnalyzingDocId(docId);
-        try {
-            const result = await api.analyzeFromPncp(docId);
-            router.push(`/analises/${result.id}`);
-        } catch (e) {
-            console.error("Analysis failed:", e);
-            alert("Falha ao analisar documento. Tente novamente.");
-            setAnalyzingDocId(null);
-        }
-    }
-
     if (documents.length === 0) {
         return (
             <div className="card p-12 text-center">
@@ -654,19 +633,6 @@ function DocumentsTab({
 
                                 {downloadUrl && (
                                     <div className="flex items-center gap-1 shrink-0">
-                                        <button
-                                            onClick={() => handleAnalyze(doc.id)}
-                                            disabled={analyzingDocId === doc.id}
-                                            className="p-2 rounded-lg hover:bg-purple-500/10 transition-all opacity-0 group-hover:opacity-100"
-                                            style={{ color: "var(--color-primary)" }}
-                                            title="Analisar com IA"
-                                        >
-                                            {analyzingDocId === doc.id ? (
-                                                <Loader2 className="w-4 h-4 animate-spin" />
-                                            ) : (
-                                                <Bot className="w-4 h-4" />
-                                            )}
-                                        </button>
                                         <a
                                             href={downloadUrl}
                                             target="_blank"

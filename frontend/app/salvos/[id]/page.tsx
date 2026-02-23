@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { api, SearchResultDetail, ResultItem, ResultDocument, EditalAnalysis } from "@/lib/api";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
+import { ModalPortal } from "@/components/modal-portal";
 
 type TabId = "geral" | "itens" | "documentos" | "detalhes_edital";
 
@@ -61,14 +62,18 @@ export default function SalvoDetailPage() {
         try {
             setLoading(true);
             setError(null);
-            const data = await api.getResultDetail(resultId);
-            setResult(data);
-            // Try to load existing analysis for this result
-            try {
-                const analysis = await api.getAnalysisByResultId(resultId);
-                setLinkedAnalysis(analysis);
-            } catch {
-                // No analysis exists yet - that's fine
+            const [resultRes, analysisRes] = await Promise.allSettled([
+                api.getResultDetail(resultId),
+                api.getAnalysisByResultId(resultId),
+            ]);
+
+            if (resultRes.status === "rejected") {
+                throw resultRes.reason;
+            }
+
+            setResult(resultRes.value);
+            if (analysisRes.status === "fulfilled") {
+                setLinkedAnalysis(analysisRes.value);
             }
         } catch (err) {
             setError("Erro ao carregar detalhes do edital.");
@@ -881,7 +886,16 @@ function AnalysisModal({
             .then((analysis) => {
                 if (!cancelled) {
                     setStage(PROGRESS_STEPS.length);
-                    setResult(analysis);
+                    if (analysis.status === "error") {
+                        const errMsg = analysis.error_message?.toLowerCase() || "";
+                        if (errMsg.includes("insufficient_quota") || errMsg.includes("exceeded your current quota")) {
+                            setError("⚠️ Os créditos da API da OpenAI acabaram. Por favor, recarregue sua conta para usar a Inteligência Artificial.");
+                        } else {
+                            setError(analysis.error_message || "Ocorreu um erro interno durante a análise com IA.");
+                        }
+                    } else {
+                        setResult(analysis);
+                    }
                 }
             })
             .catch((e) => {
@@ -901,124 +915,126 @@ function AnalysisModal({
     const data = result?.analysis_data as Record<string, any> | null;
 
     return (
-        <div
-            className="fixed inset-0 z-50 flex items-center justify-center"
-            style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-            onClick={(e) => { if (e.target === e.currentTarget && (result || error)) onClose(); }}
-        >
+        <ModalPortal>
             <div
-                className="rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
-                style={{ background: "var(--color-bg-card)", border: "1px solid var(--color-border)" }}
+                className="fixed inset-0 z-50 flex items-center justify-center"
+                style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+                onClick={(e) => { if (e.target === e.currentTarget && (result || error)) onClose(); }}
             >
-                {/* Header */}
-                <div className="flex items-center justify-between p-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
-                            <Bot className="w-5 h-5 text-white" />
+                <div
+                    className="rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
+                    style={{ background: "var(--color-bg-card)", border: "1px solid var(--color-border)" }}
+                >
+                    {/* Header */}
+                    <div className="flex items-center justify-between p-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
+                                <Bot className="w-5 h-5 text-white" />
+                            </div>
+                            <div>
+                                <h3 className="text-base font-semibold" style={{ color: "var(--color-text-primary)" }}>Análise com IA</h3>
+                                <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Extraindo dados do edital</p>
+                            </div>
                         </div>
-                        <div>
-                            <h3 className="text-base font-semibold" style={{ color: "var(--color-text-primary)" }}>Análise com IA</h3>
-                            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Extraindo dados do edital</p>
-                        </div>
+                        {(result || error) && (
+                            <button onClick={onClose} className="p-1.5 rounded-lg" style={{ color: "var(--color-text-muted)" }}>
+                                <X className="w-4 h-4" />
+                            </button>
+                        )}
                     </div>
-                    {(result || error) && (
-                        <button onClick={onClose} className="p-1.5 rounded-lg" style={{ color: "var(--color-text-muted)" }}>
-                            <X className="w-4 h-4" />
-                        </button>
-                    )}
-                </div>
 
-                {/* Content */}
-                <div className="p-5">
-                    {error ? (
-                        <div className="text-center py-4">
-                            <AlertCircle className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--color-danger)" }} />
-                            <p className="text-sm" style={{ color: "var(--color-text-primary)" }}>{error}</p>
-                            <button onClick={onClose} className="mt-4 px-4 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--color-bg-tertiary)", color: "var(--color-text-secondary)" }}>
-                                Fechar
-                            </button>
-                        </div>
-                    ) : !result ? (
-                        <div className="space-y-4">
-                            {/* Progress bar */}
-                            <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "var(--color-bg-tertiary)" }}>
-                                <div
-                                    className="h-full rounded-full transition-all duration-1000 ease-out"
-                                    style={{ width: `${progress}%`, background: "linear-gradient(90deg, #6366f1, #8b5cf6)" }}
-                                />
+                    {/* Content */}
+                    <div className="p-5">
+                        {error ? (
+                            <div className="text-center py-4">
+                                <AlertCircle className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--color-danger)" }} />
+                                <p className="text-sm" style={{ color: "var(--color-text-primary)" }}>{error}</p>
+                                <button onClick={onClose} className="mt-4 px-4 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--color-bg-tertiary)", color: "var(--color-text-secondary)" }}>
+                                    Fechar
+                                </button>
                             </div>
+                        ) : !result ? (
+                            <div className="space-y-4">
+                                {/* Progress bar */}
+                                <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "var(--color-bg-tertiary)" }}>
+                                    <div
+                                        className="h-full rounded-full transition-all duration-1000 ease-out"
+                                        style={{ width: `${progress}%`, background: "linear-gradient(90deg, #6366f1, #8b5cf6)" }}
+                                    />
+                                </div>
 
-                            {/* Steps */}
-                            <div className="space-y-2">
-                                {PROGRESS_STEPS.map((step, i) => (
-                                    <div key={i} className="flex items-center gap-2.5">
-                                        {i < stage ? (
-                                            <CheckCircle2 className="w-4 h-4 flex-shrink-0" style={{ color: "var(--color-success)" }} />
-                                        ) : i === stage ? (
-                                            <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin" style={{ color: "var(--color-primary)" }} />
-                                        ) : (
-                                            <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ border: "2px solid var(--color-border)" }} />
-                                        )}
-                                        <span className="text-sm" style={{ color: i <= stage ? "var(--color-text-primary)" : "var(--color-text-muted)" }}>
-                                            {step.label}
-                                        </span>
+                                {/* Steps */}
+                                <div className="space-y-2">
+                                    {PROGRESS_STEPS.map((step, i) => (
+                                        <div key={i} className="flex items-center gap-2.5">
+                                            {i < stage ? (
+                                                <CheckCircle2 className="w-4 h-4 flex-shrink-0" style={{ color: "var(--color-success)" }} />
+                                            ) : i === stage ? (
+                                                <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin" style={{ color: "var(--color-primary)" }} />
+                                            ) : (
+                                                <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ border: "2px solid var(--color-border)" }} />
+                                            )}
+                                            <span className="text-sm" style={{ color: i <= stage ? "var(--color-text-primary)" : "var(--color-text-muted)" }}>
+                                                {step.label}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                {/* Success */}
+                                <div className="flex items-center gap-3 p-3 rounded-lg" style={{ background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.2)" }}>
+                                    <CheckCircle2 className="w-5 h-5 flex-shrink-0" style={{ color: "var(--color-success)" }} />
+                                    <div>
+                                        <p className="text-sm font-medium" style={{ color: "var(--color-success)" }}>Análise concluída!</p>
+                                        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                                            {result.page_count} páginas · {((result.processing_time_ms || 0) / 1000).toFixed(1)}s · {result.tokens_used?.toLocaleString()} tokens
+                                        </p>
                                     </div>
-                                ))}
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            {/* Success */}
-                            <div className="flex items-center gap-3 p-3 rounded-lg" style={{ background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.2)" }}>
-                                <CheckCircle2 className="w-5 h-5 flex-shrink-0" style={{ color: "var(--color-success)" }} />
-                                <div>
-                                    <p className="text-sm font-medium" style={{ color: "var(--color-success)" }}>Análise concluída!</p>
-                                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                                        {result.page_count} páginas · {((result.processing_time_ms || 0) / 1000).toFixed(1)}s · {result.tokens_used?.toLocaleString()} tokens
-                                    </p>
                                 </div>
-                            </div>
 
-                            {/* Summary */}
-                            {data?.objeto_resumo && (
-                                <div className="p-3 rounded-lg" style={{ background: "var(--color-bg-secondary)" }}>
-                                    <p className="text-xs font-medium mb-1" style={{ color: "var(--color-text-muted)" }}>Objeto</p>
-                                    <p className="text-sm" style={{ color: "var(--color-text-primary)" }}>{data.objeto_resumo}</p>
-                                </div>
-                            )}
+                                {/* Summary */}
+                                {data?.objeto_resumo && (
+                                    <div className="p-3 rounded-lg" style={{ background: "var(--color-bg-secondary)" }}>
+                                        <p className="text-xs font-medium mb-1" style={{ color: "var(--color-text-muted)" }}>Objeto</p>
+                                        <p className="text-sm" style={{ color: "var(--color-text-primary)" }}>{data.objeto_resumo}</p>
+                                    </div>
+                                )}
 
-                            {/* Quick stats */}
-                            <div className="grid grid-cols-3 gap-3">
-                                <div className="p-2 rounded-lg text-center" style={{ background: "var(--color-bg-secondary)" }}>
-                                    <p className="text-lg font-bold" style={{ color: "var(--color-primary)" }}>{data?.itens?.length || 0}</p>
-                                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Itens</p>
+                                {/* Quick stats */}
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div className="p-2 rounded-lg text-center" style={{ background: "var(--color-bg-secondary)" }}>
+                                        <p className="text-lg font-bold" style={{ color: "var(--color-primary)" }}>{data?.itens?.length || 0}</p>
+                                        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Itens</p>
+                                    </div>
+                                    <div className="p-2 rounded-lg text-center" style={{ background: "var(--color-bg-secondary)" }}>
+                                        <p className="text-lg font-bold" style={{ color: "var(--color-success)" }}>
+                                            {data?.valores?.valor_total_estimado ? new Intl.NumberFormat("pt-BR", { notation: "compact", style: "currency", currency: "BRL" }).format(data.valores.valor_total_estimado) : "—"}
+                                        </p>
+                                        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Valor Est.</p>
+                                    </div>
+                                    <div className="p-2 rounded-lg text-center" style={{ background: "var(--color-bg-secondary)" }}>
+                                        <p className="text-lg font-bold" style={{ color: "var(--color-warning)" }}>{data?.observacoes?.length || 0}</p>
+                                        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Alertas</p>
+                                    </div>
                                 </div>
-                                <div className="p-2 rounded-lg text-center" style={{ background: "var(--color-bg-secondary)" }}>
-                                    <p className="text-lg font-bold" style={{ color: "var(--color-success)" }}>
-                                        {data?.valores?.valor_total_estimado ? new Intl.NumberFormat("pt-BR", { notation: "compact", style: "currency", currency: "BRL" }).format(data.valores.valor_total_estimado) : "—"}
-                                    </p>
-                                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Valor Est.</p>
-                                </div>
-                                <div className="p-2 rounded-lg text-center" style={{ background: "var(--color-bg-secondary)" }}>
-                                    <p className="text-lg font-bold" style={{ color: "var(--color-warning)" }}>{data?.observacoes?.length || 0}</p>
-                                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Alertas</p>
-                                </div>
+
+                                {/* Save button */}
+                                <button
+                                    onClick={() => onComplete(result)}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold text-white transition-all"
+                                    style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)", boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)" }}
+                                >
+                                    <Save className="w-4 h-4" />
+                                    Salvar dados do Edital
+                                </button>
                             </div>
-
-                            {/* Save button */}
-                            <button
-                                onClick={() => onComplete(result)}
-                                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold text-white transition-all"
-                                style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)", boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)" }}
-                            >
-                                <Save className="w-4 h-4" />
-                                Salvar dados do Edital
-                            </button>
-                        </div>
-                    )}
+                        )}
+                    </div>
                 </div>
             </div>
-        </div>
+        </ModalPortal>
     );
 }
 

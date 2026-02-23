@@ -1,6 +1,7 @@
 """
 API Routes — Search Results (Inbox)
 """
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -78,36 +79,28 @@ async def get_result_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get result statistics for the dashboard."""
-    pending = (await db.execute(
-        select(func.count()).select_from(SearchResult).where(
-            SearchResult.user_id == user_id, SearchResult.status == "pending"
-        )
-    )).scalar() or 0
+    stats = (await db.execute(
+        select(
+            func.count().label("total"),
+            func.count().filter(SearchResult.status == "pending").label("pending"),
+            func.count().filter(SearchResult.status == "saved").label("saved"),
+            func.count().filter(SearchResult.status == "discarded").label("discarded"),
+            func.count().filter(SearchResult.is_read.is_(False)).label("unread"),
+        ).where(SearchResult.user_id == user_id)
+    )).one()
 
-    unread = (await db.execute(
-        select(func.count()).select_from(SearchResult).where(
-            SearchResult.user_id == user_id, SearchResult.is_read == False
-        )
-    )).scalar() or 0
-
-    saved = (await db.execute(
-        select(func.count()).select_from(SearchResult).where(
-            SearchResult.user_id == user_id, SearchResult.status == "saved"
-        )
-    )).scalar() or 0
-
-    discarded = (await db.execute(
-        select(func.count()).select_from(SearchResult).where(
-            SearchResult.user_id == user_id, SearchResult.status == "discarded"
-        )
-    )).scalar() or 0
+    total = stats.total or 0
+    pending = stats.pending or 0
+    saved = stats.saved or 0
+    discarded = stats.discarded or 0
+    unread = stats.unread or 0
 
     return {
         "pending": pending,
         "unread": unread,
         "saved": saved,
         "discarded": discarded,
-        "total": pending + saved + discarded,
+        "total": total,
     }
 
 
@@ -142,28 +135,36 @@ async def get_result_detail(
     if not result.is_read:
         result.is_read = True
 
-    # Fetch items from PNCP if not cached
+    # Fetch item/doc payloads in parallel on first access, then cache in DB.
+    fetch_tasks = []
     if not result.items_fetched:
-        await _fetch_and_cache_items(result, db)
-
-    # Fetch documents from PNCP if not cached
+        fetch_tasks.append(_fetch_items_from_pncp(result))
     if not result.documents_fetched:
-        await _fetch_and_cache_documents(result, db)
+        fetch_tasks.append(_fetch_documents_from_pncp(result))
+
+    if fetch_tasks:
+        fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        index = 0
+
+        if not result.items_fetched:
+            items_response = fetch_results[index]
+            index += 1
+            if isinstance(items_response, Exception):
+                logger.warning(f"Failed to fetch items from PNCP: {items_response}")
+            else:
+                _cache_items(result, items_response)
+            result.items_fetched = True
+
+        if not result.documents_fetched:
+            docs_response = fetch_results[index]
+            if isinstance(docs_response, Exception):
+                logger.warning(f"Failed to fetch documents from PNCP: {docs_response}")
+            else:
+                _cache_documents(result, docs_response)
+            result.documents_fetched = True
 
     await db.commit()
-
-    # Reload with fresh data
-    await db.refresh(result)
-    result_reloaded = (await db.execute(
-        select(SearchResult)
-        .options(
-            selectinload(SearchResult.items),
-            selectinload(SearchResult.documents),
-        )
-        .where(SearchResult.id == result_id)
-    )).scalar_one()
-
-    return result_reloaded
+    return result
 
 
 @router.patch("/{result_id}/action", response_model=SearchResultResponse)
@@ -217,96 +218,113 @@ async def batch_action(
 
 # ─── PNCP Data Fetchers ──────────────────────────────────────────────────────
 
-async def _fetch_and_cache_items(result: SearchResult, db: AsyncSession):
-    """Fetch items from PNCP API and cache in DB."""
-    try:
-        logger.info(
-            f"Fetching items for {result.cnpj_orgao}/{result.ano_compra}/{result.sequencial_compra}"
-        )
-        response = await pncp_client.listar_itens_contratacao(
-            cnpj=result.cnpj_orgao,
-            ano=result.ano_compra,
-            sequencial=result.sequencial_compra,
-        )
+async def _fetch_items_from_pncp(result: SearchResult) -> list[dict]:
+    logger.info(
+        f"Fetching items for {result.cnpj_orgao}/{result.ano_compra}/{result.sequencial_compra}"
+    )
+    response = await pncp_client.listar_itens_contratacao(
+        cnpj=result.cnpj_orgao,
+        ano=result.ano_compra,
+        sequencial=result.sequencial_compra,
+    )
+    return response if isinstance(response, list) else response.get("data", [])
 
-        # The API can return a list directly or a paginated dict
-        items_data = response if isinstance(response, list) else response.get("data", [])
 
-        for item_data in items_data:
-            db_item = ResultItem(
-                result_id=result.id,
-                numero_item=item_data.get("numeroItem", 0),
-                descricao=item_data.get("descricao"),
-                material_ou_servico=item_data.get("materialOuServico"),
-                material_ou_servico_nome=item_data.get("materialOuServicoNome"),
-                valor_unitario_estimado=item_data.get("valorUnitarioEstimado"),
-                valor_total=item_data.get("valorTotal"),
-                quantidade=item_data.get("quantidade"),
-                unidade_medida=item_data.get("unidadeMedida"),
-                situacao_compra_item_nome=item_data.get("situacaoCompraItemNome"),
-                criterio_julgamento_nome=item_data.get("criterioJulgamentoNome"),
-                tipo_beneficio_nome=item_data.get("tipoBeneficioNome"),
-                tem_resultado=item_data.get("temResultado"),
-                orcamento_sigiloso=item_data.get("orcamentoSigiloso"),
-                item_categoria_nome=item_data.get("itemCategoriaNome"),
-                informacao_complementar=item_data.get("informacaoComplementar"),
+async def _fetch_documents_from_pncp(result: SearchResult) -> list[dict]:
+    logger.info(
+        f"Fetching documents for {result.cnpj_orgao}/{result.ano_compra}/{result.sequencial_compra}"
+    )
+    response = await pncp_client.consultar_documentos(
+        cnpj=result.cnpj_orgao,
+        ano=result.ano_compra,
+        sequencial=result.sequencial_compra,
+    )
+    return response if isinstance(response, list) else response.get("data", [])
+
+
+def _cache_items(result: SearchResult, items_data: list[dict]):
+    existing_keys = {
+        (item.numero_item, (item.descricao or "").strip().lower())
+        for item in result.items
+    }
+    added = 0
+
+    for item_data in items_data:
+        numero_item = item_data.get("numeroItem", 0)
+        descricao = (item_data.get("descricao") or "").strip()
+        dedupe_key = (numero_item, descricao.lower())
+        if dedupe_key in existing_keys:
+            continue
+
+        db_item = ResultItem(
+            result_id=result.id,
+            numero_item=numero_item,
+            descricao=descricao or None,
+            material_ou_servico=item_data.get("materialOuServico"),
+            material_ou_servico_nome=item_data.get("materialOuServicoNome"),
+            valor_unitario_estimado=item_data.get("valorUnitarioEstimado"),
+            valor_total=item_data.get("valorTotal"),
+            quantidade=item_data.get("quantidade"),
+            unidade_medida=item_data.get("unidadeMedida"),
+            situacao_compra_item_nome=item_data.get("situacaoCompraItemNome"),
+            criterio_julgamento_nome=item_data.get("criterioJulgamentoNome"),
+            tipo_beneficio_nome=item_data.get("tipoBeneficioNome"),
+            tem_resultado=item_data.get("temResultado"),
+            orcamento_sigiloso=item_data.get("orcamentoSigiloso"),
+            item_categoria_nome=item_data.get("itemCategoriaNome"),
+            informacao_complementar=item_data.get("informacaoComplementar"),
+        )
+        result.items.append(db_item)
+        existing_keys.add(dedupe_key)
+        added += 1
+
+    logger.info(f"Cached {added} new items for result {result.id}")
+
+
+def _cache_documents(result: SearchResult, docs_data: list[dict]):
+    existing_keys = {
+        (
+            doc.sequencial_documento,
+            (doc.titulo or "").strip().lower(),
+            (doc.url or doc.uri or "").strip(),
+        )
+        for doc in result.documents
+    }
+    added = 0
+
+    for doc_data in docs_data:
+        seq = doc_data.get("sequencialDocumento")
+        titulo = (doc_data.get("titulo") or "").strip()
+        resolved_url = (doc_data.get("url") or doc_data.get("uri") or "").strip()
+        dedupe_key = (seq, titulo.lower(), resolved_url)
+        if dedupe_key in existing_keys:
+            continue
+
+        download_url = None
+        if seq:
+            download_url = (
+                f"https://pncp.gov.br/api/pncp/v1/orgaos/{result.cnpj_orgao}"
+                f"/compras/{result.ano_compra}/{result.sequencial_compra}"
+                f"/arquivos/{seq}"
             )
-            db.add(db_item)
 
-        result.items_fetched = True
-        logger.info(f"Cached {len(items_data)} items for result {result.id}")
-
-    except Exception as e:
-        logger.warning(f"Failed to fetch items from PNCP: {e}")
-        result.items_fetched = True  # Mark as attempted to avoid repeated failures
-
-
-async def _fetch_and_cache_documents(result: SearchResult, db: AsyncSession):
-    """Fetch documents from PNCP API and cache in DB."""
-    try:
-        logger.info(
-            f"Fetching documents for {result.cnpj_orgao}/{result.ano_compra}/{result.sequencial_compra}"
+        db_doc = ResultDocument(
+            result_id=result.id,
+            sequencial_documento=seq,
+            titulo=titulo or None,
+            tipo_documento_id=doc_data.get("tipoDocumentoId"),
+            tipo_documento_nome=doc_data.get("tipoDocumentoNome"),
+            tipo_documento_descricao=doc_data.get("tipoDocumentoDescricao"),
+            url=doc_data.get("url") or download_url,
+            uri=doc_data.get("uri"),
+            status_ativo=doc_data.get("statusAtivo", True),
+            data_publicacao_pncp=_parse_datetime(doc_data.get("dataPublicacaoPncp")),
         )
-        response = await pncp_client.consultar_documentos(
-            cnpj=result.cnpj_orgao,
-            ano=result.ano_compra,
-            sequencial=result.sequencial_compra,
-        )
+        result.documents.append(db_doc)
+        existing_keys.add(dedupe_key)
+        added += 1
 
-        # The API can return a list directly or a paginated dict
-        docs_data = response if isinstance(response, list) else response.get("data", [])
-
-        for doc_data in docs_data:
-            # Build download URL
-            seq = doc_data.get("sequencialDocumento")
-            download_url = None
-            if seq:
-                download_url = (
-                    f"https://pncp.gov.br/api/pncp/v1/orgaos/{result.cnpj_orgao}"
-                    f"/compras/{result.ano_compra}/{result.sequencial_compra}"
-                    f"/arquivos/{seq}"
-                )
-
-            db_doc = ResultDocument(
-                result_id=result.id,
-                sequencial_documento=seq,
-                titulo=doc_data.get("titulo"),
-                tipo_documento_id=doc_data.get("tipoDocumentoId"),
-                tipo_documento_nome=doc_data.get("tipoDocumentoNome"),
-                tipo_documento_descricao=doc_data.get("tipoDocumentoDescricao"),
-                url=doc_data.get("url") or download_url,
-                uri=doc_data.get("uri"),
-                status_ativo=doc_data.get("statusAtivo", True),
-                data_publicacao_pncp=_parse_datetime(doc_data.get("dataPublicacaoPncp")),
-            )
-            db.add(db_doc)
-
-        result.documents_fetched = True
-        logger.info(f"Cached {len(docs_data)} documents for result {result.id}")
-
-    except Exception as e:
-        logger.warning(f"Failed to fetch documents from PNCP: {e}")
-        result.documents_fetched = True  # Mark as attempted to avoid repeated failures
+    logger.info(f"Cached {added} new documents for result {result.id}")
 
 
 def _parse_datetime(value: str | None) -> datetime | None:

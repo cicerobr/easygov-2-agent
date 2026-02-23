@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import (
     String, Boolean, Integer, Numeric, Text, DateTime, Time,
     ForeignKey, UniqueConstraint, CheckConstraint, ARRAY, JSON,
-    Float,
+    Float, Index,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -123,8 +123,12 @@ class SearchAutomation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     profile: Mapped["Profile"] = relationship(back_populates="automations")
-    results: Mapped[list["SearchResult"]] = relationship(back_populates="automation")
-    runs: Mapped[list["AutomationRun"]] = relationship(back_populates="automation")
+    results: Mapped[list["SearchResult"]] = relationship(
+        back_populates="automation", cascade="all, delete-orphan"
+    )
+    runs: Mapped[list["AutomationRun"]] = relationship(
+        back_populates="automation", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         CheckConstraint("search_type IN ('publicacao', 'proposta', 'atualizacao')"),
@@ -177,6 +181,9 @@ class SearchResult(Base):
     items: Mapped[list["ResultItem"]] = relationship(back_populates="result", cascade="all, delete-orphan")
 
     __table_args__ = (
+        Index("idx_search_results_user_found_at", "user_id", "found_at"),
+        Index("idx_search_results_user_status_found_at", "user_id", "status", "found_at"),
+        Index("idx_search_results_user_is_read", "user_id", "is_read"),
         UniqueConstraint("user_id", "numero_controle_pncp"),
         CheckConstraint("status IN ('pending', 'saved', 'discarded')"),
     )
@@ -206,6 +213,10 @@ class ResultDocument(Base):
 
     result: Mapped["SearchResult"] = relationship(back_populates="documents")
 
+    __table_args__ = (
+        Index("idx_result_documents_result_id", "result_id"),
+    )
+
 
 class ResultItem(Base):
     __tablename__ = "result_items"
@@ -230,6 +241,10 @@ class ResultItem(Base):
     informacao_complementar: Mapped[Optional[str]] = mapped_column(Text)
 
     result: Mapped["SearchResult"] = relationship(back_populates="items")
+
+    __table_args__ = (
+        Index("idx_result_items_result_id", "result_id"),
+    )
 
 
 class AutomationRun(Base):
@@ -320,4 +335,3 @@ class EditalAnalysis(Base):
         CheckConstraint("source_type IN ('upload', 'pncp_download')"),
         CheckConstraint("status IN ('pending', 'processing', 'completed', 'error')"),
     )
-

@@ -2,11 +2,10 @@
 PDF Tools — Tools for the Edital Analyzer sub-agent.
 Handles PDF text extraction, PNCP PDF download, and LLM analysis.
 """
-import io
 import json
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import fitz  # PyMuPDF
 import httpx
@@ -31,6 +30,8 @@ IMPORTANTE:
 - ITENS: Extraia TODOS os itens com o máximo de detalhes possível. Esta é a informação MAIS IMPORTANTE do edital. Inclua especificações técnicas completas, marcas de referência, códigos NCM e agrupamento por lotes.
 - Para requisitos de habilitação, liste os documentos exigidos de forma resumida.
 - Identifique riscos ou cláusulas restritivas que possam dificultar a participação.
+- TAG DE OPORTUNIDADE: inclua a tag "Oportunidade" no campo "tags" quando NÃO houver exigência de atestado de capacidade técnica ou outros documentos de qualificação técnica. Se houver exigência técnica, não inclua essa tag.
+- Sempre retorne o campo "tags" como array de strings (vazio quando não houver tags).
 
 Retorne APENAS o JSON, sem markdown ou texto adicional.
 
@@ -114,7 +115,10 @@ Formato JSON esperado:
         "pregoeiro": "Nome do pregoeiro/responsável se disponível",
         "email": "Email de contato se disponível",
         "telefone": "Telefone se disponível"
-    }
+    },
+    "tags": [
+        "Oportunidade"
+    ]
 }"""
 
 
@@ -222,6 +226,8 @@ async def analyze_edital_text(text: str, model: str = None) -> dict:
         # Parse JSON response
         try:
             analysis = json.loads(content)
+            if isinstance(analysis, dict):
+                _apply_opportunity_tag_rule(analysis)
         except json.JSONDecodeError:
             logger.error(f"LLM returned invalid JSON: {content[:500]}")
             analysis = {"raw_response": content, "parse_error": True}
@@ -239,3 +245,85 @@ async def analyze_edital_text(text: str, model: str = None) -> dict:
         raise ValueError(f"Falha na análise LLM: {str(e)}")
     finally:
         await client.close()
+
+
+def _apply_opportunity_tag_rule(analysis: dict[str, Any]) -> None:
+    """
+    Enforce opportunity tag based on technical qualification requirements.
+    Rule: add 'Oportunidade' when there is no technical qualification requirement.
+    """
+    tags_raw = analysis.get("tags")
+    if isinstance(tags_raw, list):
+        tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+    elif isinstance(tags_raw, str) and tags_raw.strip():
+        tags = [tags_raw.strip()]
+    else:
+        tags = []
+
+    has_technical_requirement = _has_technical_requirement(analysis.get("habilitacao"))
+
+    if not has_technical_requirement and "Oportunidade" not in tags:
+        tags.append("Oportunidade")
+    if has_technical_requirement and "Oportunidade" in tags:
+        tags = [t for t in tags if t != "Oportunidade"]
+
+    analysis["tags"] = tags
+
+
+def _has_technical_requirement(habilitacao: Any) -> bool:
+    if not isinstance(habilitacao, dict):
+        return False
+
+    tecnica = habilitacao.get("tecnica")
+    if tecnica is None:
+        return False
+
+    if isinstance(tecnica, str):
+        values = [tecnica]
+    elif isinstance(tecnica, list):
+        values = [str(item) for item in tecnica]
+    else:
+        return False
+
+    negatives = (
+        "nao exig",
+        "não exig",
+        "nao se aplica",
+        "não se aplica",
+        "sem exig",
+        "dispens",
+        "inexist",
+        "nenhum",
+        "nenhuma",
+        "nao ha",
+        "não há",
+    )
+    technical_markers = (
+        "atestado",
+        "capacidade tecnica",
+        "capacidade técnica",
+        "qualificacao tecnica",
+        "qualificação técnica",
+        "acervo tecnico",
+        "acervo técnico",
+        "responsavel tecnico",
+        "responsável técnico",
+        "crea",
+        "cau",
+        "crt",
+        "registro profissional",
+        "certidao de acervo",
+        "certidão de acervo",
+    )
+
+    for value in values:
+        text = (value or "").strip().lower()
+        if not text:
+            continue
+        if any(marker in text for marker in technical_markers):
+            return True
+        if any(neg in text for neg in negatives):
+            continue
+        return True
+
+    return False

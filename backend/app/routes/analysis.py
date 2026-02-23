@@ -181,46 +181,30 @@ async def get_analysis_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get analysis statistics."""
-    total = (await db.execute(
-        select(func.count()).where(EditalAnalysis.user_id == user_id)
-    )).scalar() or 0
-
-    completed = (await db.execute(
-        select(func.count()).where(
-            EditalAnalysis.user_id == user_id,
-            EditalAnalysis.status == "completed",
-        )
-    )).scalar() or 0
-
-    processing = (await db.execute(
-        select(func.count()).where(
-            EditalAnalysis.user_id == user_id,
-            EditalAnalysis.status == "processing",
-        )
-    )).scalar() or 0
-
-    errors = (await db.execute(
-        select(func.count()).where(
-            EditalAnalysis.user_id == user_id,
-            EditalAnalysis.status == "error",
-        )
-    )).scalar() or 0
+    stats = (await db.execute(
+        select(
+            func.count().label("total"),
+            func.count().filter(EditalAnalysis.status == "completed").label("completed"),
+            func.count().filter(EditalAnalysis.status == "processing").label("processing"),
+            func.count().filter(EditalAnalysis.status == "error").label("errors"),
+        ).where(EditalAnalysis.user_id == user_id)
+    )).one()
 
     return {
-        "total": total,
-        "completed": completed,
-        "processing": processing,
-        "errors": errors,
+        "total": stats.total or 0,
+        "completed": stats.completed or 0,
+        "processing": stats.processing or 0,
+        "errors": stats.errors or 0,
     }
 
 
-@router.get("/by-result/{result_id}", response_model=EditalAnalysisResponse)
+@router.get("/by-result/{result_id}", response_model=EditalAnalysisResponse | None)
 async def get_analysis_by_result(
     result_id: uuid.UUID,
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the most recent completed analysis for a result."""
+    """Get the most recent completed analysis for a result, or null if none."""
     query = (
         select(EditalAnalysis)
         .where(
@@ -233,8 +217,6 @@ async def get_analysis_by_result(
     )
     result = await db.execute(query)
     analysis = result.scalar_one_or_none()
-    if not analysis:
-        raise HTTPException(404, "Nenhuma análise encontrada para este edital")
     return analysis
 
 

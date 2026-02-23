@@ -21,7 +21,7 @@ import {
     CheckCircle2,
     AlertCircle,
 } from "lucide-react";
-import { ConfirmModal } from "@/components/confirm-modal";
+import { ModalPortal } from "@/components/modal-portal";
 
 export default function AutomacoesPage() {
     const [automations, setAutomations] = useState<Automation[]>([]);
@@ -31,6 +31,7 @@ export default function AutomacoesPage() {
     const [runs, setRuns] = useState<Record<string, AutomationRun[]>>({});
     const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
     const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     useEffect(() => {
         loadAutomations();
@@ -56,9 +57,14 @@ export default function AutomacoesPage() {
 
     async function confirmDelete() {
         if (!deleteConfirmId) return;
-        await api.deleteAutomation(deleteConfirmId);
-        setDeleteConfirmId(null);
-        loadAutomations();
+        setIsDeleting(true);
+        try {
+            await api.deleteAutomation(deleteConfirmId);
+            setDeleteConfirmId(null);
+            await loadAutomations();
+        } finally {
+            setIsDeleting(false);
+        }
     }
 
     async function triggerRun(id: string) {
@@ -102,6 +108,7 @@ export default function AutomacoesPage() {
     }
 
     return (
+        <>
         <div className="max-w-5xl mx-auto animate-in">
             {/* Header */}
             <div className="flex items-center justify-between mb-8">
@@ -233,6 +240,7 @@ export default function AutomacoesPage() {
                                     <button
                                         className="btn-ghost !p-2"
                                         onClick={() => deleteAutomation(auto.id)}
+                                        disabled={isDeleting}
                                         title="Excluir"
                                     >
                                         <Trash2 className="w-4 h-4" style={{ color: "var(--color-danger)" }} />
@@ -289,31 +297,66 @@ export default function AutomacoesPage() {
             )}
             {/* Create Form Modal */}
             {showForm && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowForm(false)} />
-                    <div className="relative bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-in zoom-in-95" style={{ background: "var(--color-bg-primary)" }}>
-                        <div className="p-6">
-                            <CreateForm
-                                onSubmit={handleCreate}
-                                onCancel={() => setShowForm(false)}
-                            />
+                <ModalPortal>
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowForm(false)} />
+                        <div className="relative bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-in zoom-in-95" style={{ background: "var(--color-bg-primary)" }}>
+                            <div className="p-6">
+                                <CreateForm
+                                    onSubmit={handleCreate}
+                                    onCancel={() => setShowForm(false)}
+                                />
+                            </div>
                         </div>
                     </div>
-                </div>
+                </ModalPortal>
             )}
 
-            {/* Confirm Delete Modal */}
-            <ConfirmModal
-                isOpen={!!deleteConfirmId}
-                title="Excluir Automação"
-                message="Deseja realmente excluir esta automação e todos os seus resultados? Esta ação não pode ser desfeita."
-                confirmLabel="Excluir"
-                cancelLabel="Manter"
-                onConfirm={confirmDelete}
-                onCancel={() => setDeleteConfirmId(null)}
-                variant="danger"
-            />
         </div>
+            {/* Delete confirmation modal */}
+            {deleteConfirmId && (
+                <ModalPortal>
+                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+                        <div
+                            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                            onClick={() => !isDeleting && setDeleteConfirmId(null)}
+                        />
+                        <div
+                            className="relative w-full max-w-md rounded-2xl shadow-xl p-6 animate-in zoom-in-95"
+                            style={{ background: "#ffffff", border: "1px solid #e2e8f0" }}
+                        >
+                            <h3 className="text-lg font-semibold mb-2" style={{ color: "#0f172a" }}>
+                                Excluir automação
+                            </h3>
+                            <p className="text-sm mb-6" style={{ color: "#475569" }}>
+                                Deseja realmente excluir esta automação e todos os resultados vinculados? Esta ação não pode ser desfeita.
+                            </p>
+                            <div className="flex items-center justify-end gap-3">
+                                <button
+                                    className="btn-ghost"
+                                    onClick={() => setDeleteConfirmId(null)}
+                                    disabled={isDeleting}
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    className="btn-danger"
+                                    onClick={confirmDelete}
+                                    disabled={isDeleting}
+                                >
+                                    {isDeleting ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                        <Trash2 className="w-4 h-4" />
+                                    )}
+                                    Excluir
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </ModalPortal>
+            )}
+        </>
     );
 }
 
