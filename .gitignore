@@ -11,8 +11,8 @@ Thumbs.db
 
 # Python
 backend/venv/
-backend/__pycache__/
-backend/*.pyc
+**/__pycache__/
+**/*.pyc
 backend/uploads/
 *.db
 *.sqlite3
