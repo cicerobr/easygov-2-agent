@@ -38,6 +38,15 @@ export function ConfirmModal({
         };
     }, [isOpen]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        function handleKeyDown(e: KeyboardEvent) {
+            if (e.key === "Escape" && !isLoading) onCancel();
+        }
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [isOpen, isLoading, onCancel]);
+
     if (!isOpen) return null;
 
     const colors = {
@@ -46,16 +55,28 @@ export function ConfirmModal({
         primary: "var(--color-primary)",
     };
 
+    const glows = {
+        danger: "rgba(220, 38, 38, 0.2)",
+        warning: "rgba(217, 119, 6, 0.2)",
+        primary: "var(--color-primary-glow)",
+    };
+
     return (
         <ModalPortal>
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+                className="fixed inset-0 z-50 flex items-center justify-center p-4"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="confirm-modal-title"
+            >
                 <div
-                    className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
+                    className="absolute inset-0 modal-overlay-enter"
+                    style={{ background: "var(--color-overlay)", backdropFilter: "blur(4px)" }}
                     onClick={isLoading ? undefined : onCancel}
                 />
                 <div
-                    className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden animate-in zoom-in-95 duration-200"
-                    style={{ background: "var(--color-bg-primary)" }}
+                    className="relative rounded-2xl shadow-2xl max-w-md w-full overflow-hidden modal-content-enter"
+                    style={{ background: "var(--color-bg-card)", border: "1px solid var(--color-border)" }}
                 >
                     <div className="p-6">
                         <div className="flex items-center gap-4 mb-4">
@@ -66,7 +87,11 @@ export function ConfirmModal({
                                 <AlertTriangle className="w-6 h-6" style={{ color: colors[variant] }} />
                             </div>
                             <div>
-                                <h3 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>
+                                <h3
+                                    id="confirm-modal-title"
+                                    className="text-xl font-bold"
+                                    style={{ color: "var(--color-text-primary)" }}
+                                >
                                     {title}
                                 </h3>
                             </div>
@@ -77,7 +102,10 @@ export function ConfirmModal({
                         </p>
                     </div>
 
-                    <div className="p-4 flex items-center justify-end gap-3" style={{ background: "var(--color-bg-secondary)" }}>
+                    <div
+                        className="p-4 flex items-center justify-end gap-3"
+                        style={{ background: "var(--color-bg-secondary)" }}
+                    >
                         <button
                             className="btn-ghost px-4 py-2 text-sm font-medium"
                             onClick={onCancel}
@@ -86,15 +114,19 @@ export function ConfirmModal({
                             {cancelLabel}
                         </button>
                         <button
-                            className="px-6 py-2 rounded-xl text-sm font-bold text-white transition-all hover:scale-105 active:scale-95 shadow-lg flex items-center gap-2"
-                            style={{ background: colors[variant], opacity: isLoading ? 0.7 : 1 }}
+                            className="px-6 py-2.5 rounded-xl text-sm font-bold text-white transition-all active:scale-95 flex items-center gap-2"
+                            style={{
+                                background: colors[variant],
+                                opacity: isLoading ? 0.7 : 1,
+                                boxShadow: `0 4px 14px ${glows[variant]}`,
+                            }}
                             onClick={onConfirm}
                             disabled={isLoading}
                         >
                             {isLoading && (
                                 <svg className="w-4 h-4 animate-spin text-white" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                                 </svg>
                             )}
                             {confirmLabel}

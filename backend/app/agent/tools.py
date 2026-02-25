@@ -1,17 +1,67 @@
 """
-LangChain Tools — PNCP API tools for the EasyGov agent.
-Each tool wraps a PNCP API endpoint and returns structured data.
+LangChain tools for PNCP access.
+
+LangChain 1.x migration notes:
+- Typed input contracts via Pydantic schemas (`args_schema`).
+- Stable output envelope for deterministic downstream handling.
 """
+
+from __future__ import annotations
+
 import json
-from datetime import date, datetime, timedelta
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from app.pncp_client import pncp_client
 
 
-@tool
+def _safe_data(data: Any) -> Any:
+    return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+
+
+def _meta(source: str) -> dict[str, str]:
+    return {
+        "source": source,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _ok(source: str, data: Any) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "data": _safe_data(data),
+        "error": None,
+        "meta": _meta(source),
+    }
+
+
+def _error(source: str, exc: Exception) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "data": None,
+        "error": {
+            "code": "PNCP_TOOL_ERROR",
+            "message": str(exc),
+        },
+        "meta": _meta(source),
+    }
+
+
+class BuscarContratacoesPublicacaoInput(BaseModel):
+    data_inicial: str = Field(..., pattern=r"^\d{8}$")
+    data_final: str = Field(..., pattern=r"^\d{8}$")
+    codigo_modalidade: int
+    pagina: int = Field(default=1, ge=1)
+    uf: Optional[str] = Field(default=None, min_length=2, max_length=2)
+    codigo_municipio_ibge: Optional[str] = None
+    cnpj: Optional[str] = None
+    codigo_modo_disputa: Optional[int] = None
+
+
+@tool(args_schema=BuscarContratacoesPublicacaoInput)
 async def buscar_contratacoes_publicacao(
     data_inicial: str,
     data_final: str,
@@ -21,22 +71,8 @@ async def buscar_contratacoes_publicacao(
     codigo_municipio_ibge: Optional[str] = None,
     cnpj: Optional[str] = None,
     codigo_modo_disputa: Optional[int] = None,
-) -> str:
-    """Search for procurement contracts by publication date on the PNCP portal.
-
-    Args:
-        data_inicial: Start date in YYYYMMDD format (e.g. '20260101').
-        data_final: End date in YYYYMMDD format (e.g. '20260131').
-        codigo_modalidade: Procurement modality code (e.g. 6=Pregão Eletrônico, 8=Dispensa).
-        pagina: Page number (starts at 1).
-        uf: Optional state abbreviation (e.g. 'SP', 'RJ').
-        codigo_municipio_ibge: Optional IBGE city code.
-        cnpj: Optional CNPJ of the contracting entity.
-        codigo_modo_disputa: Optional dispute mode code.
-
-    Returns:
-        JSON string with the list of contracts found and pagination info.
-    """
+) -> dict[str, Any]:
+    """Busca contratações por data de publicação no PNCP."""
     try:
         result = await pncp_client.buscar_contratacoes_publicacao(
             data_inicial=data_inicial,
@@ -48,12 +84,21 @@ async def buscar_contratacoes_publicacao(
             cnpj=cnpj,
             codigo_modo_disputa=codigo_modo_disputa,
         )
-        return json.dumps(result, ensure_ascii=False, default=str)
+        return _ok("buscar_contratacoes_publicacao", result)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error("buscar_contratacoes_publicacao", e)
 
 
-@tool
+class BuscarContratacoesPropostaAbertaInput(BaseModel):
+    data_final: str = Field(..., pattern=r"^\d{8}$")
+    pagina: int = Field(default=1, ge=1)
+    codigo_modalidade: Optional[int] = None
+    uf: Optional[str] = Field(default=None, min_length=2, max_length=2)
+    codigo_municipio_ibge: Optional[str] = None
+    cnpj: Optional[str] = None
+
+
+@tool(args_schema=BuscarContratacoesPropostaAbertaInput)
 async def buscar_contratacoes_proposta_aberta(
     data_final: str,
     pagina: int = 1,
@@ -61,20 +106,8 @@ async def buscar_contratacoes_proposta_aberta(
     uf: Optional[str] = None,
     codigo_municipio_ibge: Optional[str] = None,
     cnpj: Optional[str] = None,
-) -> str:
-    """Search for procurement contracts with open proposal submission period.
-
-    Args:
-        data_final: End date for proposal submission in YYYYMMDD format.
-        pagina: Page number (starts at 1).
-        codigo_modalidade: Optional modality code (e.g. 6=Pregão Eletrônico, 8=Dispensa).
-        uf: Optional state abbreviation (e.g. 'SP', 'RJ').
-        codigo_municipio_ibge: Optional IBGE city code.
-        cnpj: Optional CNPJ of the contracting entity.
-
-    Returns:
-        JSON string with contracts currently accepting proposals.
-    """
+) -> dict[str, Any]:
+    """Busca contratações com prazo aberto para envio de propostas."""
     try:
         result = await pncp_client.buscar_contratacoes_proposta(
             data_final=data_final,
@@ -84,12 +117,23 @@ async def buscar_contratacoes_proposta_aberta(
             codigo_municipio_ibge=codigo_municipio_ibge,
             cnpj=cnpj,
         )
-        return json.dumps(result, ensure_ascii=False, default=str)
+        return _ok("buscar_contratacoes_proposta_aberta", result)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error("buscar_contratacoes_proposta_aberta", e)
 
 
-@tool
+class BuscarContratacoesAtualizacaoInput(BaseModel):
+    data_inicial: str = Field(..., pattern=r"^\d{8}$")
+    data_final: str = Field(..., pattern=r"^\d{8}$")
+    codigo_modalidade: int
+    pagina: int = Field(default=1, ge=1)
+    uf: Optional[str] = Field(default=None, min_length=2, max_length=2)
+    codigo_municipio_ibge: Optional[str] = None
+    cnpj: Optional[str] = None
+    codigo_modo_disputa: Optional[int] = None
+
+
+@tool(args_schema=BuscarContratacoesAtualizacaoInput)
 async def buscar_contratacoes_atualizacao(
     data_inicial: str,
     data_final: str,
@@ -99,22 +143,8 @@ async def buscar_contratacoes_atualizacao(
     codigo_municipio_ibge: Optional[str] = None,
     cnpj: Optional[str] = None,
     codigo_modo_disputa: Optional[int] = None,
-) -> str:
-    """Search for procurement contracts updated within a date range.
-
-    Args:
-        data_inicial: Start date in YYYYMMDD format.
-        data_final: End date in YYYYMMDD format.
-        codigo_modalidade: Procurement modality code.
-        pagina: Page number (starts at 1).
-        uf: Optional state abbreviation.
-        codigo_municipio_ibge: Optional IBGE city code.
-        cnpj: Optional CNPJ.
-        codigo_modo_disputa: Optional dispute mode code.
-
-    Returns:
-        JSON string with updated contracts.
-    """
+) -> dict[str, Any]:
+    """Busca contratações atualizadas em uma faixa de datas."""
     try:
         result = await pncp_client.buscar_contratacoes_atualizacao(
             data_inicial=data_inicial,
@@ -126,75 +156,65 @@ async def buscar_contratacoes_atualizacao(
             cnpj=cnpj,
             codigo_modo_disputa=codigo_modo_disputa,
         )
-        return json.dumps(result, ensure_ascii=False, default=str)
+        return _ok("buscar_contratacoes_atualizacao", result)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error("buscar_contratacoes_atualizacao", e)
 
 
-@tool
-async def detalhar_contratacao(cnpj: str, ano: int, sequencial: int) -> str:
-    """Get full details of a specific procurement contract.
+class DetalharContratacaoInput(BaseModel):
+    cnpj: str
+    ano: int
+    sequencial: int
 
-    Args:
-        cnpj: CNPJ of the contracting entity.
-        ano: Year of the procurement.
-        sequencial: Sequential number of the procurement.
 
-    Returns:
-        JSON string with complete contract details.
-    """
+@tool(args_schema=DetalharContratacaoInput)
+async def detalhar_contratacao(cnpj: str, ano: int, sequencial: int) -> dict[str, Any]:
+    """Detalha uma contratação específica no PNCP."""
     try:
         result = await pncp_client.detalhar_contratacao(cnpj, ano, sequencial)
-        return json.dumps(result, ensure_ascii=False, default=str)
+        return _ok("detalhar_contratacao", result)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error("detalhar_contratacao", e)
 
 
-@tool
+class ListarItensContratacaoInput(BaseModel):
+    cnpj: str
+    ano: int
+    sequencial: int
+    pagina: int = Field(default=1, ge=1)
+
+
+@tool(args_schema=ListarItensContratacaoInput)
 async def listar_itens_contratacao(
     cnpj: str, ano: int, sequencial: int, pagina: int = 1
-) -> str:
-    """List all items/lots of a specific procurement contract.
-
-    Args:
-        cnpj: CNPJ of the contracting entity.
-        ano: Year of the procurement.
-        sequencial: Sequential number of the procurement.
-        pagina: Page number.
-
-    Returns:
-        JSON string with the list of items.
-    """
+) -> dict[str, Any]:
+    """Lista os itens de uma contratação."""
     try:
         result = await pncp_client.listar_itens_contratacao(cnpj, ano, sequencial, pagina)
-        return json.dumps(result, ensure_ascii=False, default=str)
+        return _ok("listar_itens_contratacao", result)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error("listar_itens_contratacao", e)
 
 
-@tool
+class ConsultarDocumentosEditalInput(BaseModel):
+    cnpj: str
+    ano: int
+    sequencial: int
+    pagina: int = Field(default=1, ge=1)
+
+
+@tool(args_schema=ConsultarDocumentosEditalInput)
 async def consultar_documentos_edital(
     cnpj: str, ano: int, sequencial: int, pagina: int = 1
-) -> str:
-    """List all documents (edital files, annexes) of a procurement contract.
-
-    Args:
-        cnpj: CNPJ of the contracting entity.
-        ano: Year of the procurement.
-        sequencial: Sequential number of the procurement.
-        pagina: Page number.
-
-    Returns:
-        JSON string with the list of documents and download info.
-    """
+) -> dict[str, Any]:
+    """Lista os documentos de um edital/contratação."""
     try:
         result = await pncp_client.consultar_documentos(cnpj, ano, sequencial, pagina)
-        return json.dumps(result, ensure_ascii=False, default=str)
+        return _ok("consultar_documentos_edital", result)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error("consultar_documentos_edital", e)
 
 
-# All tools available to the agent
 ALL_TOOLS = [
     buscar_contratacoes_publicacao,
     buscar_contratacoes_proposta_aberta,
@@ -203,3 +223,4 @@ ALL_TOOLS = [
     listar_itens_contratacao,
     consultar_documentos_edital,
 ]
+

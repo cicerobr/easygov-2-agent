@@ -4,18 +4,21 @@ API Routes — Edital PDF Analysis
 import logging
 import math
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import EditalAnalysis, ResultDocument
+from app.models import AnalysisTechnicalEvidence, EditalAnalysis, ResultDocument
 from app.schemas import (
+    AnalysisTechnicalEvidenceResponse,
     EditalAnalysisResponse,
     EditalAnalysisListResponse,
     AnalyzeFromPncpRequest,
     AnalyzeBatchFromPncpRequest,
+    ValidateTechnicalEvidenceRequest,
 )
 from app.agent.pdf_analyzer import edital_analyzer
 from app.config import get_settings
@@ -218,6 +221,71 @@ async def get_analysis_by_result(
     result = await db.execute(query)
     analysis = result.scalar_one_or_none()
     return analysis
+
+
+@router.get(
+    "/{result_id}/technical-evidence",
+    response_model=list[AnalysisTechnicalEvidenceResponse],
+)
+async def get_technical_evidence_by_result(
+    result_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    latest_analysis = (
+        await db.execute(
+            select(EditalAnalysis)
+            .where(
+                EditalAnalysis.user_id == user_id,
+                EditalAnalysis.result_id == result_id,
+                EditalAnalysis.status == "completed",
+            )
+            .order_by(desc(EditalAnalysis.created_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not latest_analysis:
+        return []
+
+    evidences = (
+        await db.execute(
+            select(AnalysisTechnicalEvidence)
+            .where(
+                AnalysisTechnicalEvidence.analysis_id == latest_analysis.id,
+                AnalysisTechnicalEvidence.user_id == user_id,
+            )
+            .order_by(AnalysisTechnicalEvidence.created_at.asc())
+        )
+    ).scalars().all()
+    return evidences
+
+
+@router.patch(
+    "/technical-evidence/{evidence_id}/validate",
+    response_model=AnalysisTechnicalEvidenceResponse,
+)
+async def validate_technical_evidence(
+    evidence_id: uuid.UUID,
+    body: ValidateTechnicalEvidenceRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    evidence = (
+        await db.execute(
+            select(AnalysisTechnicalEvidence).where(
+                AnalysisTechnicalEvidence.id == evidence_id,
+                AnalysisTechnicalEvidence.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not evidence:
+        raise HTTPException(404, "Evidência técnica não encontrada")
+
+    evidence.is_human_validated = body.is_human_validated
+    evidence.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(evidence)
+    return evidence
 
 
 @router.get("/{analysis_id}", response_model=EditalAnalysisResponse)

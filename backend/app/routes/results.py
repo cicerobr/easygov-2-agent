@@ -12,11 +12,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import SearchResult, ResultItem, ResultDocument
+from app.models import (
+    AnalysisTechnicalEvidence,
+    EditalAnalysis,
+    ResultItem,
+    ResultDocument,
+    ResultPipelineState,
+    SearchResult,
+)
 from app.pncp_client import pncp_client
 from app.schemas import (
-    SearchResultResponse, SearchResultDetailResponse,
-    PaginatedResults, ResultActionRequest, ResultBatchActionRequest,
+    PaginatedResults,
+    PriorityScoreComponent,
+    PriorityScoreResponse,
+    ResultActionRequest,
+    ResultBatchActionRequest,
+    ResultItemResponse,
+    ResultPipelineKpisResponse,
+    ResultPipelineStateResponse,
+    SearchResultDetailResponse,
+    SearchResultResponse,
+)
+from app.services.pipeline_state import set_pipeline_stage, stage_from_result_status
+from app.services.priority_score import (
+    score_deadline_component,
+    score_financial_component,
+    score_historical_component,
+    score_technical_component,
 )
 
 router = APIRouter(prefix="/results", tags=["Resultados (Inbox)"])
@@ -104,6 +126,273 @@ async def get_result_stats(
     }
 
 
+@router.get("/kpis", response_model=ResultPipelineKpisResponse)
+async def get_pipeline_kpis(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lifecycle = (
+        await db.execute(
+            select(
+                func.count().label("total"),
+                func.count().filter(SearchResult.status == "pending").label("pending"),
+                func.count().filter(SearchResult.status == "saved").label("saved"),
+                func.count().filter(SearchResult.status == "discarded").label("discarded"),
+                func.count().filter(SearchResult.status == "dispute_open").label("dispute_open"),
+                func.count().filter(SearchResult.status == "dispute_won").label("dispute_won"),
+                func.count().filter(SearchResult.status == "dispute_lost").label("dispute_lost"),
+            ).where(SearchResult.user_id == user_id)
+        )
+    ).one()
+
+    total = lifecycle.total or 0
+    pending_total = lifecycle.pending or 0
+    saved_total = lifecycle.saved or 0
+    discarded_total = lifecycle.discarded or 0
+    dispute_open_total = lifecycle.dispute_open or 0
+    won_total = lifecycle.dispute_won or 0
+    lost_total = lifecycle.dispute_lost or 0
+    dispute_total = dispute_open_total + won_total + lost_total
+    triaged_total = saved_total + discarded_total + dispute_total
+    saved_lifecycle_total = saved_total + dispute_total
+
+    analyses = (
+        await db.execute(
+            select(
+                func.count().label("total"),
+                func.count().filter(EditalAnalysis.status == "completed").label("completed"),
+                func.count().filter(EditalAnalysis.status == "error").label("errors"),
+                func.avg(EditalAnalysis.processing_time_ms).label("avg_processing_ms"),
+                func.count()
+                .filter(
+                    and_(
+                        EditalAnalysis.status == "completed",
+                        EditalAnalysis.result_id.is_not(None),
+                    )
+                )
+                .label("completed_with_result"),
+            ).where(EditalAnalysis.user_id == user_id)
+        )
+    ).one()
+
+    completed_analyses = analyses.completed or 0
+    failed_analyses = analyses.errors or 0
+    analysis_total = analyses.total or 0
+    avg_processing_ms = float(analyses.avg_processing_ms or 0)
+    completed_with_result = analyses.completed_with_result or 0
+
+    evidence_coverage = (
+        await db.execute(
+            select(func.count(func.distinct(AnalysisTechnicalEvidence.analysis_id))).where(
+                AnalysisTechnicalEvidence.user_id == user_id
+            )
+        )
+    ).scalar() or 0
+
+    pending_to_saved_rate = (
+        round((saved_lifecycle_total / triaged_total) * 100, 2) if triaged_total else 0
+    )
+    saved_to_dispute_rate = (
+        round((dispute_total / saved_lifecycle_total) * 100, 2) if saved_lifecycle_total else 0
+    )
+    dispute_win_rate = (
+        round((won_total / (won_total + lost_total)) * 100, 2) if (won_total + lost_total) else 0
+    )
+    analysis_success_rate = (
+        round((completed_analyses / analysis_total) * 100, 2) if analysis_total else 0
+    )
+    technical_evidence_coverage_rate = (
+        round((evidence_coverage / completed_with_result) * 100, 2)
+        if completed_with_result
+        else 0
+    )
+
+    return ResultPipelineKpisResponse(
+        total_results=total,
+        triaged_total=triaged_total,
+        pending_total=pending_total,
+        dispute_total=dispute_total,
+        won_total=won_total,
+        lost_total=lost_total,
+        pending_to_saved_rate=pending_to_saved_rate,
+        saved_to_dispute_rate=saved_to_dispute_rate,
+        dispute_win_rate=dispute_win_rate,
+        analysis_success_rate=analysis_success_rate,
+        analysis_avg_processing_ms=round(avg_processing_ms, 2),
+        technical_evidence_coverage_rate=technical_evidence_coverage_rate,
+    )
+
+
+def _has_no_technical_requirement(analysis_data: dict | None) -> bool:
+    if not isinstance(analysis_data, dict):
+        return False
+    habilitacao = analysis_data.get("habilitacao")
+    if not isinstance(habilitacao, dict):
+        return False
+    tecnica = habilitacao.get("tecnica")
+    entries: list[str] = []
+    if isinstance(tecnica, list):
+        entries = [str(item).lower() for item in tecnica]
+    elif isinstance(tecnica, str):
+        entries = [tecnica.lower()]
+    if not entries:
+        return False
+    markers = (
+        "não exige",
+        "nao exige",
+        "sem exig",
+        "dispensad",
+    )
+    return all(any(marker in item for marker in markers) for item in entries)
+
+
+@router.get("/{result_id}/priority-score", response_model=PriorityScoreResponse)
+async def get_result_priority_score(
+    result_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = (
+        await db.execute(
+            select(SearchResult).where(
+                SearchResult.id == result_id,
+                SearchResult.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not result:
+        raise HTTPException(status_code=404, detail="Resultado não encontrado")
+
+    latest_analysis = (
+        await db.execute(
+            select(EditalAnalysis)
+            .where(
+                EditalAnalysis.user_id == user_id,
+                EditalAnalysis.result_id == result_id,
+                EditalAnalysis.status == "completed",
+            )
+            .order_by(EditalAnalysis.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    evidence_count = 0
+    if latest_analysis:
+        evidence_count = (
+            await db.execute(
+                select(func.count()).where(
+                    AnalysisTechnicalEvidence.analysis_id == latest_analysis.id,
+                    AnalysisTechnicalEvidence.user_id == user_id,
+                )
+            )
+        ).scalar() or 0
+
+    history = (
+        await db.execute(
+            select(
+                func.count().filter(SearchResult.status == "dispute_won").label("won"),
+                func.count().filter(SearchResult.status == "dispute_lost").label("lost"),
+            ).where(
+                SearchResult.user_id == user_id,
+                SearchResult.cnpj_orgao == result.cnpj_orgao,
+            )
+        )
+    ).one()
+    won = history.won or 0
+    lost = history.lost or 0
+    win_rate = (won / (won + lost)) if (won + lost) > 0 else None
+
+    deadline_score = score_deadline_component(result.data_encerramento_proposta)
+    financial_score = score_financial_component(
+        float(result.valor_total_estimado) if result.valor_total_estimado is not None else None
+    )
+    technical_score = score_technical_component(
+        evidence_count=evidence_count,
+        has_no_technical_requirement=_has_no_technical_requirement(
+            latest_analysis.analysis_data if latest_analysis else None
+        ),
+        analysis_completed=latest_analysis is not None,
+    )
+    historical_score = score_historical_component(win_rate)
+    total = round(deadline_score + technical_score + financial_score + historical_score, 2)
+
+    recommendation = "monitorar"
+    if total >= 75:
+        recommendation = "prioridade_alta"
+    elif total >= 50:
+        recommendation = "avaliar_agora"
+
+    components = [
+        PriorityScoreComponent(
+            label="Prazo",
+            score=round(deadline_score, 2),
+            max_score=35,
+            reason="Proximidade do encerramento de propostas",
+        ),
+        PriorityScoreComponent(
+            label="Aderência técnica",
+            score=round(technical_score, 2),
+            max_score=25,
+            reason="Cobertura e clareza da qualificação técnica",
+        ),
+        PriorityScoreComponent(
+            label="Atratividade financeira",
+            score=round(financial_score, 2),
+            max_score=25,
+            reason="Faixa de valor estimado do edital",
+        ),
+        PriorityScoreComponent(
+            label="Histórico no órgão",
+            score=round(historical_score, 2),
+            max_score=15,
+            reason="Taxa de vitórias históricas por órgão",
+        ),
+    ]
+
+    return PriorityScoreResponse(
+        result_id=result.id,
+        total_score=total,
+        recommendation=recommendation,
+        components=components,
+    )
+
+
+@router.get("/{result_id}/pipeline-state", response_model=ResultPipelineStateResponse)
+async def get_result_pipeline_state(
+    result_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = (
+        await db.execute(
+            select(SearchResult).where(
+                SearchResult.id == result_id,
+                SearchResult.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not result:
+        raise HTTPException(status_code=404, detail="Resultado não encontrado")
+
+    state = (
+        await db.execute(
+            select(ResultPipelineState).where(ResultPipelineState.result_id == result_id)
+        )
+    ).scalar_one_or_none()
+
+    if not state:
+        state = await set_pipeline_stage(
+            db,
+            result_id=result.id,
+            user_id=user_id,
+            stage=stage_from_result_status(result.status),
+            finished=result.status != "pending",
+        )
+        await db.commit()
+        await db.refresh(state)
+    return state
+
+
 @router.get("/{result_id}", response_model=SearchResultDetailResponse)
 async def get_result_detail(
     result_id: uuid.UUID,
@@ -164,7 +453,18 @@ async def get_result_detail(
             result.documents_fetched = True
 
     await db.commit()
-    return result
+
+    detail = SearchResultDetailResponse.model_validate(result)
+    deduped_items = _dedupe_items_for_response(result.items)
+    if len(deduped_items) != len(result.items):
+        logger.warning(
+            "Deduplicated result items for result %s: %s -> %s",
+            result.id,
+            len(result.items),
+            len(deduped_items),
+        )
+    detail_items = [ResultItemResponse.model_validate(item) for item in deduped_items]
+    return detail.model_copy(update={"items": detail_items})
 
 
 @router.patch("/{result_id}/action", response_model=SearchResultResponse)
@@ -188,6 +488,13 @@ async def update_result_status(
     item.status = action.action
     item.acted_at = datetime.utcnow()
     item.is_read = True
+    await set_pipeline_stage(
+        db,
+        result_id=item.id,
+        user_id=user_id,
+        stage=stage_from_result_status(item.status),
+        finished=True,
+    )
     await db.commit()
     await db.refresh(item)
     return item
@@ -201,6 +508,17 @@ async def batch_action(
 ):
     """Save or discard multiple results at once."""
     now = datetime.utcnow()
+    target_results = (
+        await db.execute(
+            select(SearchResult.id).where(
+                and_(
+                    SearchResult.id.in_(data.result_ids),
+                    SearchResult.user_id == user_id,
+                )
+            )
+        )
+    ).scalars().all()
+
     stmt = (
         update(SearchResult)
         .where(
@@ -212,6 +530,15 @@ async def batch_action(
         .values(status=data.action, acted_at=now, is_read=True)
     )
     result = await db.execute(stmt)
+    for result_id in target_results:
+        await set_pipeline_stage(
+            db,
+            result_id=result_id,
+            user_id=user_id,
+            stage=stage_from_result_status(data.action),
+            finished=True,
+            stage_started_at=now,
+        )
     await db.commit()
     return {"updated": result.rowcount}
 
@@ -242,43 +569,132 @@ async def _fetch_documents_from_pncp(result: SearchResult) -> list[dict]:
     return response if isinstance(response, list) else response.get("data", [])
 
 
-def _cache_items(result: SearchResult, items_data: list[dict]):
-    existing_keys = {
-        (item.numero_item, (item.descricao or "").strip().lower())
-        for item in result.items
-    }
-    added = 0
+def _normalize_item_number(value: object) -> int:
+    try:
+        if value is None:
+            return 0
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
-    for item_data in items_data:
-        numero_item = item_data.get("numeroItem", 0)
-        descricao = (item_data.get("descricao") or "").strip()
-        dedupe_key = (numero_item, descricao.lower())
-        if dedupe_key in existing_keys:
+
+def _item_dedupe_key(numero_item: object, descricao: object) -> tuple[str, int | str] | None:
+    normalized_numero = _normalize_item_number(numero_item)
+    if normalized_numero > 0:
+        return ("numero_item", normalized_numero)
+
+    normalized_desc = str(descricao or "").strip().lower()
+    if normalized_desc:
+        return ("descricao", normalized_desc)
+
+    return None
+
+
+def _item_quality_score(item: ResultItem) -> int:
+    score = 0
+    fields = (
+        item.descricao,
+        item.material_ou_servico,
+        item.material_ou_servico_nome,
+        item.valor_unitario_estimado,
+        item.valor_total,
+        item.quantidade,
+        item.unidade_medida,
+        item.situacao_compra_item_nome,
+        item.criterio_julgamento_nome,
+        item.tipo_beneficio_nome,
+        item.tem_resultado,
+        item.orcamento_sigiloso,
+        item.item_categoria_nome,
+        item.informacao_complementar,
+    )
+    for value in fields:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                score += 1
+        else:
+            score += 1
+    return score
+
+
+def _apply_item_payload(item: ResultItem, item_data: dict):
+    item.numero_item = _normalize_item_number(item_data.get("numeroItem"))
+    item.descricao = (item_data.get("descricao") or "").strip() or None
+    item.material_ou_servico = item_data.get("materialOuServico")
+    item.material_ou_servico_nome = item_data.get("materialOuServicoNome")
+    item.valor_unitario_estimado = item_data.get("valorUnitarioEstimado")
+    item.valor_total = item_data.get("valorTotal")
+    item.quantidade = item_data.get("quantidade")
+    item.unidade_medida = item_data.get("unidadeMedida")
+    item.situacao_compra_item_nome = item_data.get("situacaoCompraItemNome")
+    item.criterio_julgamento_nome = item_data.get("criterioJulgamentoNome")
+    item.tipo_beneficio_nome = item_data.get("tipoBeneficioNome")
+    item.tem_resultado = item_data.get("temResultado")
+    item.orcamento_sigiloso = item_data.get("orcamentoSigiloso")
+    item.item_categoria_nome = item_data.get("itemCategoriaNome")
+    item.informacao_complementar = item_data.get("informacaoComplementar")
+
+
+def _dedupe_items_for_response(items: list[ResultItem]) -> list[ResultItem]:
+    deduped: list[ResultItem] = []
+    by_key_index: dict[tuple[str, int | str], int] = {}
+
+    for item in items:
+        key = _item_dedupe_key(item.numero_item, item.descricao)
+        if key is None:
+            deduped.append(item)
             continue
 
-        db_item = ResultItem(
-            result_id=result.id,
-            numero_item=numero_item,
-            descricao=descricao or None,
-            material_ou_servico=item_data.get("materialOuServico"),
-            material_ou_servico_nome=item_data.get("materialOuServicoNome"),
-            valor_unitario_estimado=item_data.get("valorUnitarioEstimado"),
-            valor_total=item_data.get("valorTotal"),
-            quantidade=item_data.get("quantidade"),
-            unidade_medida=item_data.get("unidadeMedida"),
-            situacao_compra_item_nome=item_data.get("situacaoCompraItemNome"),
-            criterio_julgamento_nome=item_data.get("criterioJulgamentoNome"),
-            tipo_beneficio_nome=item_data.get("tipoBeneficioNome"),
-            tem_resultado=item_data.get("temResultado"),
-            orcamento_sigiloso=item_data.get("orcamentoSigiloso"),
-            item_categoria_nome=item_data.get("itemCategoriaNome"),
-            informacao_complementar=item_data.get("informacaoComplementar"),
-        )
+        existing_index = by_key_index.get(key)
+        if existing_index is None:
+            by_key_index[key] = len(deduped)
+            deduped.append(item)
+            continue
+
+        existing_item = deduped[existing_index]
+        if _item_quality_score(item) > _item_quality_score(existing_item):
+            deduped[existing_index] = item
+
+    deduped.sort(key=lambda item: (item.numero_item or 0, (item.descricao or "").strip().lower()))
+    return deduped
+
+
+def _cache_items(result: SearchResult, items_data: list[dict]):
+    existing_items_by_key: dict[tuple[str, int | str], ResultItem] = {}
+    for existing_item in result.items:
+        key = _item_dedupe_key(existing_item.numero_item, existing_item.descricao)
+        if key is None:
+            continue
+
+        known = existing_items_by_key.get(key)
+        if not known or _item_quality_score(existing_item) > _item_quality_score(known):
+            existing_items_by_key[key] = existing_item
+
+    added = 0
+    updated = 0
+
+    for item_data in items_data:
+        dedupe_key = _item_dedupe_key(item_data.get("numeroItem"), item_data.get("descricao"))
+        if dedupe_key is not None and dedupe_key in existing_items_by_key:
+            _apply_item_payload(existing_items_by_key[dedupe_key], item_data)
+            updated += 1
+            continue
+
+        db_item = ResultItem(result_id=result.id, numero_item=0)
+        _apply_item_payload(db_item, item_data)
         result.items.append(db_item)
-        existing_keys.add(dedupe_key)
+        if dedupe_key is not None:
+            existing_items_by_key[dedupe_key] = db_item
         added += 1
 
-    logger.info(f"Cached {added} new items for result {result.id}")
+    logger.info(
+        "Cached items for result %s: added=%s updated=%s",
+        result.id,
+        added,
+        updated,
+    )
 
 
 def _cache_documents(result: SearchResult, docs_data: list[dict]):

@@ -35,8 +35,15 @@ import {
     Save,
 } from "lucide-react";
 import { api, SearchResultDetail, ResultItem, ResultDocument, EditalAnalysis } from "@/lib/api";
+import { getAnalysisTags, hasOpportunityTag } from "@/lib/analysis-tags";
+import {
+    getTechnicalQualificationItems,
+    hasNoTechnicalQualificationRequirement,
+} from "@/lib/technical-requirements";
+import { getKeywordScopeLabel } from "@/lib/keyword-evidence";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
 import { ModalPortal } from "@/components/modal-portal";
+import { ConfirmModal } from "@/components/confirm-modal";
 
 type TabId = "geral" | "itens" | "documentos" | "detalhes_edital";
 
@@ -50,15 +57,13 @@ export default function SalvoDetailPage() {
     const [error, setError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<TabId>("geral");
     const [saving, setSaving] = useState(false);
+    const [disputing, setDisputing] = useState(false);
     const [linkedAnalysis, setLinkedAnalysis] = useState<EditalAnalysis | null>(null);
     const [showAnalysisModal, setShowAnalysisModal] = useState(false);
     const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null);
+    const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
 
-    useEffect(() => {
-        loadResult();
-    }, [resultId]);
-
-    async function loadResult() {
+    const loadResult = useCallback(async () => {
         try {
             setLoading(true);
             setError(null);
@@ -81,7 +86,11 @@ export default function SalvoDetailPage() {
         } finally {
             setLoading(false);
         }
-    }
+    }, [resultId]);
+
+    useEffect(() => {
+        loadResult();
+    }, [loadResult]);
 
     function handleAnalyzeDoc(docId: string) {
         setAnalyzingDocId(docId);
@@ -109,6 +118,19 @@ export default function SalvoDetailPage() {
             console.error(err);
         } finally {
             setSaving(false);
+        }
+    }
+
+    async function handleStartDispute() {
+        if (!result) return;
+        setDisputing(true);
+        try {
+            await api.startDispute(result.id);
+            router.push("/disputas");
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setDisputing(false);
         }
     }
 
@@ -150,13 +172,20 @@ export default function SalvoDetailPage() {
         pending: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
         saved: "bg-green-500/20 text-green-400 border-green-500/30",
         discarded: "bg-red-500/20 text-red-400 border-red-500/30",
+        dispute_open: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+        dispute_won: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+        dispute_lost: "bg-orange-500/20 text-orange-400 border-orange-500/30",
     };
 
     const statusLabels: Record<string, string> = {
         pending: "Pendente",
         saved: "Salvo",
         discarded: "Descartado",
+        dispute_open: "Em Disputa",
+        dispute_won: "Vencido",
+        dispute_lost: "Perdido",
     };
+    const linkedAnalysisHasOpportunity = hasOpportunityTag(linkedAnalysis?.analysis_data);
 
     return (
         <div className="max-w-5xl mx-auto">
@@ -193,6 +222,11 @@ export default function SalvoDetailPage() {
                                     SRP
                                 </span>
                             )}
+                            {linkedAnalysisHasOpportunity && (
+                                <span className="badge bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                    Oportunidade
+                                </span>
+                            )}
                         </div>
                         <h1
                             className="text-xl font-semibold leading-tight mb-2"
@@ -207,8 +241,18 @@ export default function SalvoDetailPage() {
 
                     {/* Actions */}
                     <div className="flex gap-2 shrink-0">
+                        {result.status === "saved" && (
+                            <button
+                                onClick={handleStartDispute}
+                                disabled={disputing}
+                                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors"
+                            >
+                                <Scale className="w-4 h-4" />
+                                {disputing ? "Enviando..." : "Disputar Edital"}
+                            </button>
+                        )}
                         <button
-                            onClick={() => handleAction("discarded")}
+                            onClick={() => setDiscardConfirmOpen(true)}
                             disabled={saving}
                             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
                         >
@@ -229,7 +273,7 @@ export default function SalvoDetailPage() {
                         key={tab.id}
                         onClick={() => setActiveTab(tab.id)}
                         className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex-1 justify-center ${activeTab === tab.id
-                            ? "bg-purple-600 text-white shadow-lg shadow-purple-600/20"
+                            ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
                             : ""
                             }`}
                         style={
@@ -244,7 +288,7 @@ export default function SalvoDetailPage() {
                             <span
                                 className={`px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === tab.id
                                     ? "bg-white/20 text-white"
-                                    : "bg-purple-500/20 text-purple-400"
+                                    : "bg-emerald-500/20 text-emerald-500"
                                     }`}
                             >
                                 {tab.count}
@@ -281,6 +325,25 @@ export default function SalvoDetailPage() {
                     onClose={() => { setShowAnalysisModal(false); setAnalyzingDocId(null); }}
                 />
             )}
+
+            <ConfirmModal
+                isOpen={discardConfirmOpen}
+                title="Confirmar exclusão"
+                message={
+                    result.objeto_compra
+                        ? `Deseja realmente descartar este edital?\n\n"${result.objeto_compra}"`
+                        : "Deseja realmente descartar este edital?"
+                }
+                confirmLabel="Sim, descartar"
+                cancelLabel="Cancelar"
+                variant="danger"
+                isLoading={saving}
+                onCancel={() => setDiscardConfirmOpen(false)}
+                onConfirm={async () => {
+                    setDiscardConfirmOpen(false);
+                    await handleAction("discarded");
+                }}
+            />
         </div>
     );
 }
@@ -288,6 +351,8 @@ export default function SalvoDetailPage() {
 // ─── General Info Tab ────────────────────────────────────────────────────────
 
 function GeneralTab({ result }: { result: SearchResultDetail }) {
+    const matchScopeLabel = getKeywordScopeLabel(result.keyword_match_scope);
+    const matchEvidence = result.keyword_match_evidence || [];
     const infoSections = [
         {
             title: "Órgão / Entidade",
@@ -297,6 +362,8 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                 { label: "CNPJ", value: formatCNPJ(result.cnpj_orgao) },
                 { label: "UF", value: result.uf },
                 { label: "Município", value: result.municipio },
+                { label: "Código Unidade Compradora", value: result.codigo_unidade_compradora },
+                { label: "Nome Unidade Compradora", value: result.nome_unidade_compradora },
             ],
         },
         {
@@ -381,7 +448,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                         label="Documentos"
                         value={String(result.documents.length)}
                         icon={FileText}
-                        color="purple"
+                        color="emerald"
                     />
                     <StatMini
                         label="Situação"
@@ -396,7 +463,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
             {infoSections.map((section) => (
                 <div key={section.title} className="card p-6">
                     <div className="flex items-center gap-2 mb-4">
-                        <section.icon className="w-5 h-5 text-purple-400" />
+                        <section.icon className="w-5 h-5 text-emerald-500" />
                         <h3
                             className="text-sm font-semibold uppercase tracking-wider"
                             style={{ color: "var(--color-text-secondary)" }}
@@ -430,11 +497,49 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                 </div>
             ))}
 
+            {matchEvidence.length > 0 && (
+                <div className="card p-6">
+                    <div className="flex items-center gap-2 mb-3">
+                        <Info className="w-5 h-5 text-emerald-500" />
+                        <h3
+                            className="text-sm font-semibold uppercase tracking-wider"
+                            style={{ color: "var(--color-text-secondary)" }}
+                        >
+                            Por que este edital entrou
+                        </h3>
+                    </div>
+                    {matchScopeLabel && (
+                        <p className="text-xs mb-3" style={{ color: "var(--color-text-muted)" }}>
+                            Origem do match: {matchScopeLabel}
+                        </p>
+                    )}
+                    <div className="space-y-3">
+                        {matchEvidence.map((evidence, index) => (
+                            <div
+                                key={`${evidence.scope}-${evidence.keyword}-${index}`}
+                                className="rounded-lg border p-3"
+                                style={{ borderColor: "var(--color-border)" }}
+                            >
+                                <p className="text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
+                                    {evidence.scope === "item"
+                                        ? `Item ${evidence.item_numero ?? "?"}`
+                                        : "Objeto"}{" "}
+                                    • Palavra-chave: {evidence.keyword}
+                                </p>
+                                <p className="text-sm" style={{ color: "var(--color-text-primary)" }}>
+                                    {evidence.snippet}
+                                </p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {/* Links */}
             {(result.link_sistema_origem || result.link_processo_eletronico) && (
                 <div className="card p-6">
                     <div className="flex items-center gap-2 mb-4">
-                        <ExternalLink className="w-5 h-5 text-purple-400" />
+                        <ExternalLink className="w-5 h-5 text-emerald-500" />
                         <h3
                             className="text-sm font-semibold uppercase tracking-wider"
                             style={{ color: "var(--color-text-secondary)" }}
@@ -448,7 +553,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                                 href={result.link_sistema_origem}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="flex items-center gap-2 text-purple-400 hover:text-purple-300 transition-colors text-sm"
+                                className="flex items-center gap-2 text-emerald-500 hover:text-emerald-400 transition-colors text-sm"
                             >
                                 <ExternalLink className="w-4 h-4" />
                                 Sistema de Origem
@@ -460,7 +565,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                                 href={result.link_processo_eletronico}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="flex items-center gap-2 text-purple-400 hover:text-purple-300 transition-colors text-sm"
+                                className="flex items-center gap-2 text-emerald-500 hover:text-emerald-400 transition-colors text-sm"
                             >
                                 <ExternalLink className="w-4 h-4" />
                                 Processo Eletrônico
@@ -516,12 +621,12 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
                 {items.map((item, index) => (
                     <div
                         key={item.id}
-                        className="card p-5 hover:border-purple-500/30 transition-all"
+                        className="card p-5 hover:border-emerald-500/30 transition-all"
                         style={{ animationDelay: `${index * 50}ms` }}
                     >
                         <div className="flex items-start gap-4">
-                            <div className="shrink-0 w-10 h-10 rounded-lg bg-purple-500/15 flex items-center justify-center">
-                                <span className="text-sm font-bold text-purple-400">
+                            <div className="shrink-0 w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center">
+                                <span className="text-sm font-bold text-emerald-500">
                                     {item.numero_item}
                                 </span>
                             </div>
@@ -675,7 +780,7 @@ function DocumentsTab({
 
     const docTypeColors: Record<string, string> = {
         Edital: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-        "Termo de Referência": "bg-purple-500/10 text-purple-400 border-purple-500/20",
+        "Termo de Referência": "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
         "Estudo Técnico Preliminar": "bg-green-500/10 text-green-400 border-green-500/20",
         DFD: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
         default: "",
@@ -686,8 +791,8 @@ function DocumentsTab({
             {/* Summary */}
             <div className="card p-4">
                 <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-purple-500/10">
-                        <FileText className="w-5 h-5 text-purple-400" />
+                    <div className="p-2 rounded-lg bg-emerald-500/10">
+                        <FileText className="w-5 h-5 text-emerald-500" />
                     </div>
                     <div>
                         <p className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
@@ -713,7 +818,7 @@ function DocumentsTab({
                     return (
                         <div
                             key={doc.id}
-                            className="card p-4 hover:border-purple-500/30 transition-all group"
+                            className="card p-4 hover:border-emerald-500/30 transition-all group"
                             style={{ animationDelay: `${index * 50}ms` }}
                         >
                             <div className="flex items-start gap-3">
@@ -749,7 +854,7 @@ function DocumentsTab({
                                         <button
                                             onClick={() => onAnalyze(doc.id)}
                                             disabled={analyzingDocId === doc.id}
-                                            className="p-2 rounded-lg hover:bg-purple-500/10 transition-all opacity-0 group-hover:opacity-100"
+                                            className="p-2 rounded-lg hover:bg-emerald-500/10 transition-all opacity-0 group-hover:opacity-100"
                                             style={{ color: "var(--color-primary)" }}
                                             title="Analisar com IA"
                                         >
@@ -763,7 +868,7 @@ function DocumentsTab({
                                             href={downloadUrl}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            className="p-2 rounded-lg hover:text-purple-400 hover:bg-purple-500/10 transition-all opacity-0 group-hover:opacity-100"
+                                            className="p-2 rounded-lg hover:text-emerald-500 hover:bg-emerald-500/10 transition-all opacity-0 group-hover:opacity-100"
                                             style={{ color: "var(--color-text-muted)" }}
                                             title="Baixar documento"
                                         >
@@ -783,7 +888,7 @@ function DocumentsTab({
                     href={`https://pncp.gov.br/app/editais/${cnpjOrgao}/${anoCompra}/${sequencialCompra}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-2 text-sm text-purple-400 hover:text-purple-300 transition-colors"
+                    className="flex items-center gap-2 text-sm text-emerald-500 hover:text-emerald-400 transition-colors"
                 >
                     <ExternalLink className="w-4 h-4" />
                     Ver todos os documentos no Portal PNCP
@@ -810,7 +915,7 @@ function StatMini({
     const colorMap: Record<string, string> = {
         green: "bg-green-500/10 text-green-400",
         blue: "bg-blue-500/10 text-blue-400",
-        purple: "bg-purple-500/10 text-purple-400",
+        emerald: "bg-emerald-500/10 text-emerald-500",
         yellow: "bg-yellow-500/10 text-yellow-400",
     };
 
@@ -928,7 +1033,7 @@ function AnalysisModal({
                     {/* Header */}
                     <div className="flex items-center justify-between p-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
                         <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
+                            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-hover))" }}>
                                 <Bot className="w-5 h-5 text-white" />
                             </div>
                             <div>
@@ -959,7 +1064,7 @@ function AnalysisModal({
                                 <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "var(--color-bg-tertiary)" }}>
                                     <div
                                         className="h-full rounded-full transition-all duration-1000 ease-out"
-                                        style={{ width: `${progress}%`, background: "linear-gradient(90deg, #6366f1, #8b5cf6)" }}
+                                        style={{ width: `${progress}%`, background: "linear-gradient(90deg, var(--color-primary), var(--color-primary-hover))" }}
                                     />
                                 </div>
 
@@ -1024,7 +1129,7 @@ function AnalysisModal({
                                 <button
                                     onClick={() => onComplete(result)}
                                     className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold text-white transition-all"
-                                    style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)", boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)" }}
+                                    style={{ background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-hover))", boxShadow: "0 4px 12px var(--color-primary-glow)" }}
                                 >
                                     <Save className="w-4 h-4" />
                                     Salvar dados do Edital
@@ -1045,6 +1150,7 @@ function EditalDetailsTab({ analysis }: { analysis: EditalAnalysis }) {
     const data = analysis.analysis_data as Record<string, any> | null;
     if (!data) return <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>Dados não disponíveis.</p>;
 
+    const analysisTags = getAnalysisTags(data);
     const orgao = data.orgao || {};
     const licitacao = data.licitacao || {};
     const valores = data.valores || {};
@@ -1054,6 +1160,8 @@ function EditalDetailsTab({ analysis }: { analysis: EditalAnalysis }) {
     const garantia = data.garantia || {};
     const contatos = data.contatos || {};
     const hab = data.habilitacao || {};
+    const technicalItems = getTechnicalQualificationItems(data);
+    const hasNoTechnicalRequirement = hasNoTechnicalQualificationRequirement(data);
     const itens = data.itens || [];
     const obs = data.observacoes || [];
 
@@ -1087,11 +1195,46 @@ function EditalDetailsTab({ analysis }: { analysis: EditalAnalysis }) {
                 </div>
             )}
 
+            {/* Tags */}
+            {analysisTags.length > 0 && (
+                <div className="card p-5">
+                    <h4 className="text-sm font-semibold uppercase tracking-wider mb-3" style={{ color: "var(--color-text-secondary)" }}>
+                        Tags
+                    </h4>
+                    <div className="flex flex-wrap gap-2">
+                        {analysisTags.map((tag) => {
+                            const isOpportunity = tag.toLocaleLowerCase("pt-BR") === "oportunidade";
+                            return (
+                                <span
+                                    key={tag}
+                                    className="badge border"
+                                    style={
+                                        isOpportunity
+                                            ? {
+                                                background: "rgba(16, 185, 129, 0.12)",
+                                                color: "#34D399",
+                                                borderColor: "rgba(16, 185, 129, 0.35)",
+                                            }
+                                            : {
+                                                background: "var(--color-bg-tertiary)",
+                                                color: "var(--color-text-secondary)",
+                                                borderColor: "var(--color-border)",
+                                            }
+                                    }
+                                >
+                                    {tag}
+                                </span>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
             {/* Grid: Órgão + Licitação */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="card p-5">
                     <div className="flex items-center gap-2 mb-4">
-                        <Building2 className="w-4 h-4 text-purple-400" />
+                        <Building2 className="w-4 h-4 text-emerald-500" />
                         <h4 className="text-sm font-semibold uppercase tracking-wider" style={{ color: "var(--color-text-secondary)" }}>Órgão</h4>
                     </div>
                     <InfoRow label="Nome" value={orgao.nome} />
@@ -1101,7 +1244,7 @@ function EditalDetailsTab({ analysis }: { analysis: EditalAnalysis }) {
                 </div>
                 <div className="card p-5">
                     <div className="flex items-center gap-2 mb-4">
-                        <Gavel className="w-4 h-4 text-purple-400" />
+                        <Gavel className="w-4 h-4 text-emerald-500" />
                         <h4 className="text-sm font-semibold uppercase tracking-wider" style={{ color: "var(--color-text-secondary)" }}>Licitação</h4>
                     </div>
                     <InfoRow label="Modalidade" value={licitacao.modalidade} />
@@ -1194,17 +1337,72 @@ function EditalDetailsTab({ analysis }: { analysis: EditalAnalysis }) {
                 </div>
             )}
 
+            {/* Qualificação Técnica */}
+            <div className="card p-5" style={{ borderLeft: "3px solid var(--color-primary)" }}>
+                <div className="flex items-center gap-2 mb-4">
+                    <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                    <h4
+                        className="text-sm font-semibold uppercase tracking-wider"
+                        style={{ color: "var(--color-text-secondary)" }}
+                    >
+                        Qualificação Técnica Exigida
+                    </h4>
+                </div>
+
+                {hasNoTechnicalRequirement ? (
+                    <div
+                        className="p-3 rounded-lg"
+                        style={{
+                            background: "rgba(16, 185, 129, 0.08)",
+                            border: "1px solid rgba(16, 185, 129, 0.2)",
+                        }}
+                    >
+                        <p className="text-sm" style={{ color: "var(--color-success)" }}>
+                            Não há exigência de atestado de capacidade técnica ou documentação
+                            técnica específica.
+                        </p>
+                    </div>
+                ) : technicalItems.length > 0 ? (
+                    <ul className="space-y-2">
+                        {technicalItems.map((item: string, index: number) => (
+                            <li
+                                key={`${index}-${item.slice(0, 24)}`}
+                                className="flex items-start gap-2 text-sm"
+                                style={{ color: "var(--color-text-primary)" }}
+                            >
+                                <CheckCircle2
+                                    className="w-4 h-4 flex-shrink-0 mt-0.5"
+                                    style={{ color: "var(--color-success)" }}
+                                />
+                                <span className="whitespace-pre-wrap">{item}</span>
+                            </li>
+                        ))}
+                    </ul>
+                ) : (
+                    <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+                        A análise não encontrou detalhes suficientes sobre qualificação técnica.
+                    </p>
+                )}
+            </div>
+
             {/* Habilitação */}
-            {Object.values(hab).some((v: any) => v?.length > 0) && (
+            {["juridica", "fiscal", "trabalhista", "economica"].some(
+                (key) => Array.isArray(hab[key]) && hab[key].length > 0
+            ) && (
                 <div className="card p-5">
                     <div className="flex items-center gap-2 mb-4">
                         <ShieldCheck className="w-4 h-4 text-green-400" />
                         <h4 className="text-sm font-semibold uppercase tracking-wider" style={{ color: "var(--color-text-secondary)" }}>Habilitação</h4>
                     </div>
-                    {["juridica", "fiscal", "trabalhista", "economica", "tecnica"].map((key) => {
+                    {["juridica", "fiscal", "trabalhista", "economica"].map((key) => {
                         const items = hab[key] || [];
                         if (items.length === 0) return null;
-                        const labels: Record<string, string> = { juridica: "Jurídica", fiscal: "Fiscal", trabalhista: "Trabalhista", economica: "Econômico-Financeira", tecnica: "Técnica" };
+                        const labels: Record<string, string> = {
+                            juridica: "Jurídica",
+                            fiscal: "Fiscal",
+                            trabalhista: "Trabalhista",
+                            economica: "Econômico-Financeira",
+                        };
                         return (
                             <div key={key} className="mb-3">
                                 <p className="text-xs font-semibold mb-1" style={{ color: "var(--color-text-secondary)" }}>{labels[key]}</p>
@@ -1270,7 +1468,7 @@ function EditalDetailsTab({ analysis }: { analysis: EditalAnalysis }) {
             {(contatos.pregoeiro || contatos.email) && (
                 <div className="card p-5">
                     <div className="flex items-center gap-2 mb-4">
-                        <Users className="w-4 h-4 text-purple-400" />
+                        <Users className="w-4 h-4 text-emerald-500" />
                         <h4 className="text-sm font-semibold uppercase tracking-wider" style={{ color: "var(--color-text-secondary)" }}>Contatos</h4>
                     </div>
                     {contatos.pregoeiro && <InfoRow label="Pregoeiro" value={contatos.pregoeiro} />}

@@ -10,20 +10,22 @@ import {
     Pause,
     Trash2,
     Clock,
-    Search,
     X,
     Loader2,
     MapPin,
     Tag,
-    ChevronDown,
     ChevronUp,
     History,
     CheckCircle2,
     AlertCircle,
 } from "lucide-react";
 import { ModalPortal } from "@/components/modal-portal";
+import { ConfirmModal } from "@/components/confirm-modal";
+import { SkeletonList } from "@/components/skeleton";
+import { useToast } from "@/components/toast";
 
 export default function AutomacoesPage() {
+    const toast = useToast();
     const [automations, setAutomations] = useState<Automation[]>([]);
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
@@ -41,27 +43,37 @@ export default function AutomacoesPage() {
         try {
             const data = await api.listAutomations();
             setAutomations(data);
+        } catch (error) {
+            console.error(error);
+            setAutomations([]);
+            toast.error("Não foi possível carregar as automações. Verifique a conexão com o backend.");
         } finally {
             setLoading(false);
         }
     }
 
     async function toggleActive(auto: Automation) {
-        await api.updateAutomation(auto.id, { is_active: !auto.is_active } as any);
+        const newState = !auto.is_active;
+        await api.updateAutomation(auto.id, { is_active: newState } as any);
+        toast.success(newState ? `"${auto.name}" ativada` : `"${auto.name}" pausada`);
         loadAutomations();
-    }
-
-    async function deleteAutomation(id: string) {
-        setDeleteConfirmId(id);
     }
 
     async function confirmDelete() {
         if (!deleteConfirmId) return;
         setIsDeleting(true);
+        const name = automations.find((a) => a.id === deleteConfirmId)?.name;
         try {
             await api.deleteAutomation(deleteConfirmId);
             setDeleteConfirmId(null);
+            toast.success(`"${name}" excluída com sucesso`);
             await loadAutomations();
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message.replace(/^API Error \d+:\s*/i, "")
+                    : "Falha ao excluir automação. Tente novamente.";
+            toast.error(message || "Falha ao excluir automação. Tente novamente.");
         } finally {
             setIsDeleting(false);
         }
@@ -71,7 +83,10 @@ export default function AutomacoesPage() {
         setRunningIds((prev) => new Set(prev).add(id));
         try {
             await api.triggerAutomation(id);
+            toast.success("Execução iniciada com sucesso!");
             loadAutomations();
+        } catch {
+            toast.error("Falha ao executar automação.");
         } finally {
             setRunningIds((prev) => {
                 const next = new Set(prev);
@@ -94,268 +109,322 @@ export default function AutomacoesPage() {
     }
 
     async function handleCreate(data: any) {
-        await api.createAutomation(data);
+        const created = await api.createAutomation(data);
+        setAutomations((prev) => [created, ...prev.filter((a) => a.id !== created.id)]);
         setShowForm(false);
-        loadAutomations();
+        toast.success("Automação criada com sucesso!");
+        await loadAutomations();
     }
 
     if (loading) {
         return (
-            <div className="flex items-center justify-center h-64">
-                <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: "var(--color-primary)", borderTopColor: "transparent" }} />
+            <div className="max-w-5xl mx-auto">
+                <div className="mb-8">
+                    <div className="skeleton" style={{ height: 28, width: 160, marginBottom: 8 }} />
+                    <div className="skeleton skeleton-text medium" />
+                </div>
+                <SkeletonList count={3} />
             </div>
         );
     }
 
     return (
         <>
-        <div className="max-w-5xl mx-auto animate-in">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-8">
-                <div>
-                    <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--color-text-primary)" }}>Automações</h1>
-                    <p style={{ color: "var(--color-text-secondary)" }}>
-                        Configure buscas automáticas no PNCP
-                    </p>
-                </div>
-                <button className="btn-primary" onClick={() => setShowForm(!showForm)}>
-                    {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-                    {showForm ? "Cancelar" : "Nova Automação"}
-                </button>
-            </div>
-
-            {/* Create Form */}
-            {showForm && <CreateForm onSubmit={handleCreate} onCancel={() => setShowForm(false)} />}
-
-            {/* Automations List */}
-            {automations.length === 0 && !showForm ? (
-                <div className="card text-center py-16">
-                    <Bot className="w-16 h-16 mx-auto mb-4" style={{ color: "var(--color-text-muted)" }} />
-                    <h2 className="text-xl font-semibold mb-2" style={{ color: "var(--color-text-primary)" }}>Nenhuma automação</h2>
-                    <p className="text-sm mb-6" style={{ color: "var(--color-text-muted)" }}>
-                        Crie sua primeira automação para começar a monitorar editais
-                    </p>
-                    <button className="btn-primary" onClick={() => setShowForm(true)}>
-                        <Plus className="w-4 h-4" /> Criar Automação
+            <div className="max-w-5xl mx-auto">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-8 animate-in">
+                    <div>
+                        <h1
+                            className="text-2xl font-extrabold mb-1"
+                            style={{ color: "var(--color-text-primary)" }}
+                        >
+                            Automações
+                        </h1>
+                        <p style={{ color: "var(--color-text-secondary)" }}>
+                            Configure buscas automáticas no PNCP
+                        </p>
+                    </div>
+                    <button className="btn-primary" onClick={() => setShowForm(!showForm)}>
+                        {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                        {showForm ? "Cancelar" : "Nova Automação"}
                     </button>
                 </div>
-            ) : (
-                <div className="space-y-4">
-                    {automations.map((auto) => (
-                        <div key={auto.id} className="card" style={auto.is_active ? {} : { opacity: 0.6 }}>
-                            <div className="flex items-start justify-between">
-                                <div className="flex items-start gap-4 flex-1 min-w-0">
-                                    <div
-                                        className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                                        style={{
-                                            background: auto.is_active
-                                                ? "rgba(99, 102, 241, 0.15)"
-                                                : "rgba(100, 116, 139, 0.15)",
-                                        }}
-                                    >
-                                        <Bot
-                                            className="w-5 h-5"
-                                            style={{
-                                                color: auto.is_active ? "var(--color-primary)" : "var(--color-text-muted)",
-                                            }}
-                                        />
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-2 mb-1">
-                                            <h3 className="text-base font-semibold truncate" style={{ color: "var(--color-text-primary)" }}>
-                                                {auto.name}
-                                            </h3>
-                                            <span className={`badge ${auto.is_active ? "badge-active" : "badge-discarded"}`}>
-                                                {auto.is_active ? "Ativa" : "Pausada"}
-                                            </span>
-                                        </div>
 
-                                        {/* Filters summary */}
-                                        <div className="flex flex-wrap gap-2 mt-2">
-                                            {auto.uf && (
-                                                <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md" style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}>
-                                                    <MapPin className="w-3 h-3" /> {auto.uf}
-                                                </span>
-                                            )}
-                                            {auto.modalidade_ids?.map((m) => (
-                                                <span key={m} className="text-xs px-2 py-1 rounded-md" style={{ background: "var(--color-bg-secondary)", color: "var(--color-text-secondary)" }}>
-                                                    {MODALIDADES[m] || `Mod. ${m}`}
-                                                </span>
-                                            ))}
-                                            {auto.keywords?.map((kw) => (
-                                                <span key={kw} className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md" style={{ background: "rgba(99,102,241,0.1)", color: "var(--color-primary)" }}>
-                                                    <Tag className="w-3 h-3" /> {kw}
-                                                </span>
-                                            ))}
-                                        </div>
-
-                                        {/* Schedule info */}
-                                        <div className="flex items-center gap-4 mt-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                                            <span className="inline-flex items-center gap-1">
-                                                <Clock className="w-3 h-3" />
-                                                A cada {auto.interval_hours}h
-                                            </span>
-                                            {auto.last_run_at && (
-                                                <span>Última: {timeAgo(auto.last_run_at)} atrás</span>
-                                            )}
-                                            {auto.next_run_at && (
-                                                <span>Próxima: {formatDateTime(auto.next_run_at)}</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* Actions */}
-                                <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                                    <button
-                                        className="btn-ghost !p-2"
-                                        onClick={() => toggleExpand(auto.id)}
-                                        title="Histórico"
-                                    >
-                                        {expandedId === auto.id ? (
-                                            <ChevronUp className="w-4 h-4" />
-                                        ) : (
-                                            <History className="w-4 h-4" />
-                                        )}
-                                    </button>
-                                    <button
-                                        className="btn-ghost !p-2"
-                                        onClick={() => triggerRun(auto.id)}
-                                        title="Executar agora"
-                                        disabled={runningIds.has(auto.id)}
-                                    >
-                                        {runningIds.has(auto.id) ? (
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                        ) : (
-                                            <Play className="w-4 h-4" style={{ color: "var(--color-success)" }} />
-                                        )}
-                                    </button>
-                                    <button
-                                        className="btn-ghost !p-2"
-                                        onClick={() => toggleActive(auto)}
-                                        title={auto.is_active ? "Pausar" : "Ativar"}
-                                    >
-                                        <Pause className="w-4 h-4" style={{ color: "var(--color-warning)" }} />
-                                    </button>
-                                    <button
-                                        className="btn-ghost !p-2"
-                                        onClick={() => deleteAutomation(auto.id)}
-                                        disabled={isDeleting}
-                                        title="Excluir"
-                                    >
-                                        <Trash2 className="w-4 h-4" style={{ color: "var(--color-danger)" }} />
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Runs history */}
-                            {expandedId === auto.id && (
-                                <div className="mt-4 pt-4" style={{ borderTop: "1px solid var(--color-border)" }}>
-                                    <h4 className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: "var(--color-text-muted)" }}>
-                                        Histórico de Execuções
-                                    </h4>
-                                    {runs[auto.id]?.length ? (
-                                        <div className="space-y-2">
-                                            {runs[auto.id].slice(0, 5).map((run) => (
-                                                <div
-                                                    key={run.id}
-                                                    className="flex items-center justify-between p-2 rounded-lg text-xs"
-                                                    style={{ background: "var(--color-bg-secondary)" }}
-                                                >
-                                                    <div className="flex items-center gap-2">
-                                                        {run.status === "success" ? (
-                                                            <CheckCircle2 className="w-3.5 h-3.5" style={{ color: "var(--color-success)" }} />
-                                                        ) : run.status === "error" ? (
-                                                            <AlertCircle className="w-3.5 h-3.5" style={{ color: "var(--color-danger)" }} />
-                                                        ) : (
-                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: "var(--color-warning)" }} />
-                                                        )}
-                                                        <span style={{ color: "var(--color-text-secondary)" }}>
-                                                            {formatDateTime(run.started_at)}
-                                                        </span>
-                                                    </div>
-                                                    <div className="flex items-center gap-4" style={{ color: "var(--color-text-muted)" }}>
-                                                        <span>{run.results_found} encontrado(s)</span>
-                                                        <span style={{ color: run.results_new > 0 ? "var(--color-success)" : undefined }}>
-                                                            {run.results_new} novo(s)
-                                                        </span>
-                                                        <span>{run.pages_searched} pág(s)</span>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                                            Nenhuma execução registrada
-                                        </p>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    ))}
-                </div>
-            )}
-            {/* Create Form Modal */}
-            {showForm && (
-                <ModalPortal>
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowForm(false)} />
-                        <div className="relative bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-in zoom-in-95" style={{ background: "var(--color-bg-primary)" }}>
-                            <div className="p-6">
-                                <CreateForm
-                                    onSubmit={handleCreate}
-                                    onCancel={() => setShowForm(false)}
-                                />
-                            </div>
-                        </div>
-                    </div>
-                </ModalPortal>
-            )}
-
-        </div>
-            {/* Delete confirmation modal */}
-            {deleteConfirmId && (
-                <ModalPortal>
-                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+                {/* Automations List */}
+                {automations.length === 0 && !showForm ? (
+                    <div className="card text-center py-16 animate-in-scale">
                         <div
-                            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-                            onClick={() => !isDeleting && setDeleteConfirmId(null)}
-                        />
-                        <div
-                            className="relative w-full max-w-md rounded-2xl shadow-xl p-6 animate-in zoom-in-95"
-                            style={{ background: "#ffffff", border: "1px solid #e2e8f0" }}
+                            className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
+                            style={{ background: "var(--color-primary-subtle)" }}
                         >
-                            <h3 className="text-lg font-semibold mb-2" style={{ color: "#0f172a" }}>
-                                Excluir automação
-                            </h3>
-                            <p className="text-sm mb-6" style={{ color: "#475569" }}>
-                                Deseja realmente excluir esta automação e todos os resultados vinculados? Esta ação não pode ser desfeita.
-                            </p>
-                            <div className="flex items-center justify-end gap-3">
-                                <button
-                                    className="btn-ghost"
-                                    onClick={() => setDeleteConfirmId(null)}
-                                    disabled={isDeleting}
-                                >
-                                    Cancelar
-                                </button>
-                                <button
-                                    className="btn-danger"
-                                    onClick={confirmDelete}
-                                    disabled={isDeleting}
-                                >
-                                    {isDeleting ? (
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                        <Trash2 className="w-4 h-4" />
-                                    )}
-                                    Excluir
-                                </button>
+                            <Bot className="w-8 h-8" style={{ color: "var(--color-text-muted)" }} />
+                        </div>
+                        <h2
+                            className="text-xl font-semibold mb-2"
+                            style={{ color: "var(--color-text-primary)" }}
+                        >
+                            Nenhuma automação
+                        </h2>
+                        <p className="text-sm mb-6" style={{ color: "var(--color-text-muted)" }}>
+                            Crie sua primeira automação para começar a monitorar editais
+                        </p>
+                        <button className="btn-primary" onClick={() => setShowForm(true)}>
+                            <Plus className="w-4 h-4" /> Criar Automação
+                        </button>
+                    </div>
+                ) : (
+                    <div className="space-y-4">
+                        {automations.map((auto, i) => (
+                            <div
+                                key={auto.id}
+                                className={`card animate-in-up stagger-${Math.min(i + 1, 10)}`}
+                                style={{
+                                    opacity: auto.is_active ? 1 : 0.6,
+                                    animationFillMode: "both",
+                                }}
+                            >
+                                <div className="flex items-start justify-between">
+                                    <div className="flex items-start gap-4 flex-1 min-w-0">
+                                        <div
+                                            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-transform duration-200 hover:scale-110"
+                                            style={{
+                                                background: auto.is_active
+                                                    ? "var(--color-primary-subtle)"
+                                                    : "rgba(100, 116, 139, 0.1)",
+                                            }}
+                                        >
+                                            <Bot
+                                                className="w-5 h-5"
+                                                style={{
+                                                    color: auto.is_active
+                                                        ? "var(--color-primary)"
+                                                        : "var(--color-text-muted)",
+                                                }}
+                                            />
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                                <h3
+                                                    className="text-base font-semibold truncate"
+                                                    style={{ color: "var(--color-text-primary)" }}
+                                                >
+                                                    {auto.name}
+                                                </h3>
+                                                <span
+                                                    className={`badge ${auto.is_active ? "badge-active" : "badge-discarded"}`}
+                                                >
+                                                    {auto.is_active ? "Ativa" : "Pausada"}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex flex-wrap gap-2 mt-2">
+                                                {auto.uf && (
+                                                    <span
+                                                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg"
+                                                        style={{
+                                                            background: "var(--color-bg-secondary)",
+                                                            color: "var(--color-text-secondary)",
+                                                        }}
+                                                    >
+                                                        <MapPin className="w-3 h-3" /> {auto.uf}
+                                                    </span>
+                                                )}
+                                                {auto.modalidade_ids?.map((m) => (
+                                                    <span
+                                                        key={m}
+                                                        className="text-xs px-2 py-1 rounded-lg"
+                                                        style={{
+                                                            background: "var(--color-bg-secondary)",
+                                                            color: "var(--color-text-secondary)",
+                                                        }}
+                                                    >
+                                                        {MODALIDADES[m] || `Mod. ${m}`}
+                                                    </span>
+                                                ))}
+                                                {auto.keywords?.map((kw) => (
+                                                    <span
+                                                        key={kw}
+                                                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg"
+                                                        style={{
+                                                            background: "var(--color-primary-subtle)",
+                                                            color: "var(--color-primary)",
+                                                        }}
+                                                    >
+                                                        <Tag className="w-3 h-3" /> {kw}
+                                                    </span>
+                                                ))}
+                                            </div>
+
+                                            <div
+                                                className="flex items-center gap-4 mt-3 text-xs flex-wrap"
+                                                style={{ color: "var(--color-text-muted)" }}
+                                            >
+                                                <span className="inline-flex items-center gap-1">
+                                                    <Clock className="w-3 h-3" />A cada {auto.interval_hours}h
+                                                </span>
+                                                {auto.last_run_at && <span>Última: {timeAgo(auto.last_run_at)} atrás</span>}
+                                                {auto.next_run_at && <span>Próxima: {formatDateTime(auto.next_run_at)}</span>}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Actions */}
+                                    <div className="flex items-center gap-1.5 flex-shrink-0 ml-4">
+                                        <button
+                                            className="btn-ghost !p-2"
+                                            onClick={() => toggleExpand(auto.id)}
+                                            title="Histórico"
+                                            aria-label="Ver histórico de execuções"
+                                        >
+                                            {expandedId === auto.id ? (
+                                                <ChevronUp className="w-4 h-4" />
+                                            ) : (
+                                                <History className="w-4 h-4" />
+                                            )}
+                                        </button>
+                                        <button
+                                            className="btn-ghost !p-2"
+                                            onClick={() => triggerRun(auto.id)}
+                                            title="Executar agora"
+                                            aria-label="Executar automação agora"
+                                            disabled={runningIds.has(auto.id)}
+                                        >
+                                            {runningIds.has(auto.id) ? (
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                            ) : (
+                                                <Play className="w-4 h-4" style={{ color: "var(--color-success)" }} />
+                                            )}
+                                        </button>
+                                        <button
+                                            className="btn-ghost !p-2"
+                                            onClick={() => toggleActive(auto)}
+                                            title={auto.is_active ? "Pausar" : "Ativar"}
+                                            aria-label={auto.is_active ? "Pausar automação" : "Ativar automação"}
+                                        >
+                                            <Pause className="w-4 h-4" style={{ color: "var(--color-warning)" }} />
+                                        </button>
+                                        <button
+                                            className="btn-ghost !p-2"
+                                            onClick={() => setDeleteConfirmId(auto.id)}
+                                            disabled={isDeleting}
+                                            title="Excluir"
+                                            aria-label="Excluir automação"
+                                        >
+                                            <Trash2 className="w-4 h-4" style={{ color: "var(--color-danger)" }} />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Runs history */}
+                                {expandedId === auto.id && (
+                                    <div
+                                        className="mt-4 pt-4 animate-in"
+                                        style={{ borderTop: "1px solid var(--color-border)" }}
+                                    >
+                                        <h4
+                                            className="text-xs font-semibold uppercase tracking-wider mb-3"
+                                            style={{ color: "var(--color-text-muted)" }}
+                                        >
+                                            Histórico de Execuções
+                                        </h4>
+                                        {runs[auto.id]?.length ? (
+                                            <div className="space-y-2">
+                                                {runs[auto.id].slice(0, 5).map((run, ri) => (
+                                                    <div
+                                                        key={run.id}
+                                                        className={`flex items-center justify-between p-3 rounded-xl text-xs transition-all duration-200 hover:scale-[1.01] stagger-${ri + 1} animate-in`}
+                                                        style={{
+                                                            background: "var(--color-bg-secondary)",
+                                                            opacity: 0,
+                                                        }}
+                                                    >
+                                                        <div className="flex items-center gap-2">
+                                                            {run.status === "success" ? (
+                                                                <CheckCircle2
+                                                                    className="w-3.5 h-3.5"
+                                                                    style={{ color: "var(--color-success)" }}
+                                                                />
+                                                            ) : run.status === "error" ? (
+                                                                <AlertCircle
+                                                                    className="w-3.5 h-3.5"
+                                                                    style={{ color: "var(--color-danger)" }}
+                                                                />
+                                                            ) : (
+                                                                <Loader2
+                                                                    className="w-3.5 h-3.5 animate-spin"
+                                                                    style={{ color: "var(--color-warning)" }}
+                                                                />
+                                                            )}
+                                                            <span style={{ color: "var(--color-text-secondary)" }}>
+                                                                {formatDateTime(run.started_at)}
+                                                            </span>
+                                                        </div>
+                                                        <div
+                                                            className="flex items-center gap-4"
+                                                            style={{ color: "var(--color-text-muted)" }}
+                                                        >
+                                                            <span>{run.results_found} encontrado(s)</span>
+                                                            <span
+                                                                style={{
+                                                                    color: run.results_new > 0 ? "var(--color-success)" : undefined,
+                                                                    fontWeight: run.results_new > 0 ? 600 : undefined,
+                                                                }}
+                                                            >
+                                                                {run.results_new} novo(s)
+                                                            </span>
+                                                            <span>{run.pages_searched} pág(s)</span>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                                                Nenhuma execução registrada
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Create Form Modal */}
+                {showForm && (
+                    <ModalPortal>
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                            <div
+                                className="absolute inset-0 modal-overlay-enter"
+                                style={{ background: "var(--color-overlay)", backdropFilter: "blur(4px)" }}
+                                onClick={() => setShowForm(false)}
+                            />
+                            <div
+                                className="relative rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto modal-content-enter"
+                                style={{
+                                    background: "var(--color-bg-card)",
+                                    border: "1px solid var(--color-border)",
+                                }}
+                            >
+                                <div className="p-6">
+                                    <CreateForm onSubmit={handleCreate} onCancel={() => setShowForm(false)} />
+                                </div>
                             </div>
                         </div>
-                    </div>
-                </ModalPortal>
-            )}
+                    </ModalPortal>
+                )}
+            </div>
+
+            {/* Delete confirmation modal */}
+            <ConfirmModal
+                isOpen={!!deleteConfirmId}
+                title="Excluir automação"
+                message="Deseja realmente excluir esta automação e todos os resultados vinculados? Esta ação não pode ser desfeita."
+                confirmLabel="Excluir"
+                onConfirm={confirmDelete}
+                onCancel={() => setDeleteConfirmId(null)}
+                variant="danger"
+                isLoading={isDeleting}
+            />
         </>
     );
 }
@@ -385,8 +454,18 @@ function CreateForm({
                 search_type: searchType,
                 uf: uf || undefined,
                 modalidade_ids: modalidades.length ? modalidades : undefined,
-                keywords: keywords ? keywords.split(",").map((k) => k.trim()).filter(Boolean) : undefined,
-                keywords_exclude: keywordsExclude ? keywordsExclude.split(",").map((k) => k.trim()).filter(Boolean) : undefined,
+                keywords: keywords
+                    ? keywords
+                        .split(",")
+                        .map((k) => k.trim())
+                        .filter(Boolean)
+                    : undefined,
+                keywords_exclude: keywordsExclude
+                    ? keywordsExclude
+                        .split(",")
+                        .map((k) => k.trim())
+                        .filter(Boolean)
+                    : undefined,
                 interval_hours: intervalHours,
             });
         } finally {
@@ -401,12 +480,20 @@ function CreateForm({
     }
 
     return (
-        <form onSubmit={handleSubmit} className="card mb-6">
-            <h2 className="text-lg font-semibold mb-5" style={{ color: "var(--color-text-primary)" }}>Nova Automação</h2>
+        <form onSubmit={handleSubmit}>
+            <h2
+                className="text-lg font-bold mb-5"
+                style={{ color: "var(--color-text-primary)" }}
+            >
+                Nova Automação
+            </h2>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
-                    <label className="block text-xs font-medium mb-2" style={{ color: "var(--color-text-secondary)" }}>
+                    <label
+                        className="block text-xs font-medium mb-2"
+                        style={{ color: "var(--color-text-secondary)" }}
+                    >
                         Nome da automação *
                     </label>
                     <input
@@ -418,7 +505,10 @@ function CreateForm({
                     />
                 </div>
                 <div>
-                    <label className="block text-xs font-medium mb-2" style={{ color: "var(--color-text-secondary)" }}>
+                    <label
+                        className="block text-xs font-medium mb-2"
+                        style={{ color: "var(--color-text-secondary)" }}
+                    >
                         Tipo de busca
                     </label>
                     <select
@@ -435,18 +525,26 @@ function CreateForm({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
-                    <label className="block text-xs font-medium mb-2" style={{ color: "var(--color-text-secondary)" }}>
+                    <label
+                        className="block text-xs font-medium mb-2"
+                        style={{ color: "var(--color-text-secondary)" }}
+                    >
                         Estado (UF)
                     </label>
                     <select className="input" value={uf} onChange={(e) => setUf(e.target.value)}>
                         <option value="">Todo Brasil</option>
                         {UFS.map((u) => (
-                            <option key={u} value={u}>{u}</option>
+                            <option key={u} value={u}>
+                                {u}
+                            </option>
                         ))}
                     </select>
                 </div>
                 <div>
-                    <label className="block text-xs font-medium mb-2" style={{ color: "var(--color-text-secondary)" }}>
+                    <label
+                        className="block text-xs font-medium mb-2"
+                        style={{ color: "var(--color-text-secondary)" }}
+                    >
                         Intervalo entre execuções
                     </label>
                     <select
@@ -464,9 +562,11 @@ function CreateForm({
                 </div>
             </div>
 
-            {/* Modalidades */}
             <div className="mb-4">
-                <label className="block text-xs font-medium mb-2" style={{ color: "var(--color-text-secondary)" }}>
+                <label
+                    className="block text-xs font-medium mb-2"
+                    style={{ color: "var(--color-text-secondary)" }}
+                >
                     Modalidades
                 </label>
                 <div className="flex flex-wrap gap-2">
@@ -474,7 +574,7 @@ function CreateForm({
                         <button
                             key={id}
                             type="button"
-                            className="text-xs px-3 py-1.5 rounded-full transition-all"
+                            className="text-xs px-3 py-1.5 rounded-full transition-all duration-200"
                             style={{
                                 background: modalidades.includes(Number(id))
                                     ? "var(--color-primary)"
@@ -482,7 +582,9 @@ function CreateForm({
                                 color: modalidades.includes(Number(id))
                                     ? "white"
                                     : "var(--color-text-secondary)",
-                                border: `1px solid ${modalidades.includes(Number(id)) ? "var(--color-primary)" : "var(--color-border)"
+                                border: `1px solid ${modalidades.includes(Number(id))
+                                        ? "var(--color-primary)"
+                                        : "var(--color-border)"
                                     }`,
                             }}
                             onClick={() => toggleModalidade(Number(id))}
@@ -495,7 +597,10 @@ function CreateForm({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                 <div>
-                    <label className="block text-xs font-medium mb-2" style={{ color: "var(--color-text-secondary)" }}>
+                    <label
+                        className="block text-xs font-medium mb-2"
+                        style={{ color: "var(--color-text-secondary)" }}
+                    >
                         Palavras-chave (separadas por vírgula)
                     </label>
                     <input
@@ -506,7 +611,10 @@ function CreateForm({
                     />
                 </div>
                 <div>
-                    <label className="block text-xs font-medium mb-2" style={{ color: "var(--color-text-secondary)" }}>
+                    <label
+                        className="block text-xs font-medium mb-2"
+                        style={{ color: "var(--color-text-secondary)" }}
+                    >
                         Excluir palavras (separadas por vírgula)
                     </label>
                     <input
@@ -523,7 +631,11 @@ function CreateForm({
                     Cancelar
                 </button>
                 <button type="submit" className="btn-primary" disabled={!name || submitting}>
-                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                    {submitting ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                        <Plus className="w-4 h-4" />
+                    )}
                     Criar Automação
                 </button>
             </div>

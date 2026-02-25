@@ -7,7 +7,7 @@ from sqlalchemy import (
     ForeignKey, UniqueConstraint, CheckConstraint, ARRAY, JSON,
     Float, Index,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -106,6 +106,7 @@ class SearchAutomation(Base):
     # Post-search filters
     keywords: Mapped[Optional[list[str]]] = mapped_column(ARRAY(String))
     keywords_exclude: Mapped[Optional[list[str]]] = mapped_column(ARRAY(String))
+    search_in_items: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     valor_minimo: Mapped[Optional[float]] = mapped_column(Numeric)
     valor_maximo: Mapped[Optional[float]] = mapped_column(Numeric)
 
@@ -161,7 +162,13 @@ class SearchResult(Base):
     municipio: Mapped[Optional[str]] = mapped_column(String)
     link_sistema_origem: Mapped[Optional[str]] = mapped_column(String)
     link_processo_eletronico: Mapped[Optional[str]] = mapped_column(String)
+    codigo_unidade_compradora: Mapped[Optional[str]] = mapped_column(String)
+    nome_unidade_compradora: Mapped[Optional[str]] = mapped_column(String)
     srp: Mapped[Optional[bool]] = mapped_column(Boolean)
+    keyword_match_scope: Mapped[Optional[str]] = mapped_column(String(16))
+    keyword_match_evidence: Mapped[Optional[list[dict]]] = mapped_column(
+        "keyword_match_evidence_json", JSONB
+    )
 
     # Result state
     status: Mapped[str] = mapped_column(String, default="pending")
@@ -175,17 +182,37 @@ class SearchResult(Base):
 
     found_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     acted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dispute_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dispute_finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     automation: Mapped["SearchAutomation"] = relationship(back_populates="results")
     documents: Mapped[list["ResultDocument"]] = relationship(back_populates="result", cascade="all, delete-orphan")
     items: Mapped[list["ResultItem"]] = relationship(back_populates="result", cascade="all, delete-orphan")
+    financial_items: Mapped[list["DisputeItemFinancial"]] = relationship(
+        back_populates="result", cascade="all, delete-orphan"
+    )
+    pipeline_state: Mapped[Optional["ResultPipelineState"]] = relationship(
+        back_populates="result", uselist=False, cascade="all, delete-orphan"
+    )
+    dispute_events: Mapped[list["DisputeEvent"]] = relationship(
+        back_populates="result", cascade="all, delete-orphan"
+    )
+    dispute_feedback: Mapped[Optional["DisputeFeedback"]] = relationship(
+        back_populates="result", uselist=False, cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_search_results_user_found_at", "user_id", "found_at"),
         Index("idx_search_results_user_status_found_at", "user_id", "status", "found_at"),
         Index("idx_search_results_user_is_read", "user_id", "is_read"),
+        Index("idx_search_results_user_scope_found_at", "user_id", "keyword_match_scope", "found_at"),
         UniqueConstraint("user_id", "numero_controle_pncp"),
-        CheckConstraint("status IN ('pending', 'saved', 'discarded')"),
+        CheckConstraint(
+            "status IN ('pending', 'saved', 'discarded', 'dispute_open', 'dispute_won', 'dispute_lost')"
+        ),
+        CheckConstraint(
+            "(keyword_match_scope IS NULL) OR (keyword_match_scope IN ('object', 'item', 'both'))"
+        ),
     )
 
 
@@ -241,9 +268,132 @@ class ResultItem(Base):
     informacao_complementar: Mapped[Optional[str]] = mapped_column(Text)
 
     result: Mapped["SearchResult"] = relationship(back_populates="items")
+    dispute_financial: Mapped[Optional["DisputeItemFinancial"]] = relationship(
+        back_populates="result_item", uselist=False, cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_result_items_result_id", "result_id"),
+    )
+
+
+class DisputeItemFinancial(Base):
+    __tablename__ = "dispute_item_financials"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False)
+    result_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("search_results.id", ondelete="CASCADE"), nullable=False)
+    result_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("result_items.id", ondelete="CASCADE"), nullable=False)
+
+    preco_fornecedor: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    mao_obra: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    materiais_consumo: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    equipamentos: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    frete_logistica: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    aliquota_imposto_percentual: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+
+    custos_totais: Mapped[float] = mapped_column(Numeric, nullable=False, default=0)
+    precos_sugeridos_json: Mapped[Optional[dict]] = mapped_column(JSON)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    result: Mapped["SearchResult"] = relationship(back_populates="financial_items")
+    result_item: Mapped["ResultItem"] = relationship(back_populates="dispute_financial")
+
+    __table_args__ = (
+        UniqueConstraint("result_item_id"),
+        Index("idx_dispute_item_financials_result_id", "result_id"),
+        Index("idx_dispute_item_financials_user_id", "user_id"),
+    )
+
+
+class ResultPipelineState(Base):
+    __tablename__ = "result_pipeline_states"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("search_results.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    pipeline_stage: Mapped[str] = mapped_column(String, nullable=False, default="captured")
+    stage_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    stage_finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    stage_error: Mapped[Optional[str]] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    result: Mapped["SearchResult"] = relationship(back_populates="pipeline_state")
+
+    __table_args__ = (
+        UniqueConstraint("result_id"),
+        Index("idx_result_pipeline_states_user_stage", "user_id", "pipeline_stage"),
+        CheckConstraint(
+            "pipeline_stage IN ('captured', 'triaged_saved', 'triaged_discarded', "
+            "'analysis_processing', 'analysis_completed', 'analysis_error', "
+            "'dispute_open', 'dispute_won', 'dispute_lost')"
+        ),
+    )
+
+
+class DisputeEvent(Base):
+    __tablename__ = "dispute_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("search_results.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    actor_type: Mapped[str] = mapped_column(String, nullable=False, default="human")
+    payload: Mapped[Optional[dict]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    result: Mapped["SearchResult"] = relationship(back_populates="dispute_events")
+
+    __table_args__ = (
+        Index("idx_dispute_events_result_created", "result_id", "created_at"),
+        CheckConstraint(
+            "event_type IN ('dispute_started', 'financial_saved', 'dispute_won', 'dispute_lost', 'feedback_submitted')"
+        ),
+        CheckConstraint("actor_type IN ('human', 'system')"),
+    )
+
+
+class DisputeFeedback(Base):
+    __tablename__ = "dispute_feedbacks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("search_results.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    loss_reason: Mapped[Optional[str]] = mapped_column(Text)
+    winner_price_delta: Mapped[Optional[float]] = mapped_column(Numeric)
+    suggested_filter_adjustments: Mapped[Optional[dict]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    result: Mapped["SearchResult"] = relationship(back_populates="dispute_feedback")
+
+    __table_args__ = (
+        UniqueConstraint("result_id"),
+        Index("idx_dispute_feedbacks_user_id", "user_id"),
     )
 
 
@@ -331,7 +481,44 @@ class EditalAnalysis(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    technical_evidences: Mapped[list["AnalysisTechnicalEvidence"]] = relationship(
+        back_populates="analysis", cascade="all, delete-orphan"
+    )
+
     __table_args__ = (
         CheckConstraint("source_type IN ('upload', 'pncp_download')"),
         CheckConstraint("status IN ('pending', 'processing', 'completed', 'error')"),
+    )
+
+
+class AnalysisTechnicalEvidence(Base):
+    __tablename__ = "analysis_technical_evidences"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("edital_analyses.id", ondelete="CASCADE"), nullable=False
+    )
+    result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("search_results.id", ondelete="SET NULL")
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    clause_ref: Mapped[Optional[str]] = mapped_column(String)
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.75)
+    is_human_validated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    analysis: Mapped["EditalAnalysis"] = relationship(back_populates="technical_evidences")
+
+    __table_args__ = (
+        Index("idx_analysis_technical_evidences_analysis_id", "analysis_id"),
+        Index("idx_analysis_technical_evidences_result_id", "result_id"),
+        Index("idx_analysis_technical_evidences_user_id", "user_id"),
     )

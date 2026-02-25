@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
     ArrowLeft,
@@ -20,8 +20,11 @@ import {
     AlertCircle,
     ChevronRight,
 } from "lucide-react";
-import { api, SearchResultDetail, ResultItem, ResultDocument } from "@/lib/api";
+import { api, SearchResultDetail, ResultItem, ResultDocument, EditalAnalysis } from "@/lib/api";
+import { hasOpportunityTag } from "@/lib/analysis-tags";
+import { getKeywordScopeLabel } from "@/lib/keyword-evidence";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
+import { ConfirmModal } from "@/components/confirm-modal";
 
 type TabId = "geral" | "itens" | "documentos";
 
@@ -35,31 +38,49 @@ export default function ResultDetailPage() {
     const [error, setError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<TabId>("geral");
     const [saving, setSaving] = useState(false);
+    const [linkedAnalysis, setLinkedAnalysis] = useState<EditalAnalysis | null>(null);
+    const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
 
-    useEffect(() => {
-        loadResult();
-    }, [resultId]);
-
-    async function loadResult() {
+    const loadResult = useCallback(async () => {
         try {
             setLoading(true);
             setError(null);
-            const data = await api.getResultDetail(resultId);
-            setResult(data);
+            const [resultRes, analysisRes] = await Promise.allSettled([
+                api.getResultDetail(resultId),
+                api.getAnalysisByResultId(resultId),
+            ]);
+
+            if (resultRes.status === "rejected") {
+                throw resultRes.reason;
+            }
+
+            setResult(resultRes.value);
+            if (analysisRes.status === "fulfilled") {
+                setLinkedAnalysis(analysisRes.value);
+            }
         } catch (err) {
             setError("Erro ao carregar detalhes do edital.");
             console.error(err);
         } finally {
             setLoading(false);
         }
-    }
+    }, [resultId]);
+
+    useEffect(() => {
+        loadResult();
+    }, [loadResult]);
 
     async function handleAction(action: "saved" | "discarded") {
         if (!result) return;
         setSaving(true);
         try {
             await api.updateResultStatus(result.id, action);
+            if (action === "discarded") {
+                window.location.assign("/inbox");
+                return;
+            }
             setResult({ ...result, status: action });
+            router.refresh();
         } catch (err) {
             console.error(err);
         } finally {
@@ -71,8 +92,8 @@ export default function ResultDetailPage() {
         return (
             <div className="flex items-center justify-center h-[80vh]">
                 <div className="text-center">
-                    <Loader2 className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-3" />
-                    <p className="text-[var(--text-secondary)]">
+                    <Loader2 className="w-8 h-8 animate-spin text-emerald-500 mx-auto mb-3" />
+                    <p className="text-[var(--color-text-secondary)]">
                         Carregando detalhes e buscando itens e documentos no PNCP...
                     </p>
                 </div>
@@ -111,6 +132,7 @@ export default function ResultDetailPage() {
         saved: "Salvo",
         discarded: "Descartado",
     };
+    const linkedAnalysisHasOpportunity = hasOpportunityTag(linkedAnalysis?.analysis_data);
 
     return (
         <div className="max-w-5xl mx-auto">
@@ -118,7 +140,7 @@ export default function ResultDetailPage() {
             <div className="mb-6">
                 <button
                     onClick={() => router.back()}
-                    className="flex items-center gap-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors mb-4"
+                    className="flex items-center gap-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors mb-4"
                 >
                     <ArrowLeft className="w-4 h-4" />
                     Voltar para Inbox
@@ -131,7 +153,7 @@ export default function ResultDetailPage() {
                                 {statusLabels[result.status]}
                             </span>
                             {result.modalidade_nome && (
-                                <span className="badge bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+                                <span className="badge bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]">
                                     {result.modalidade_nome}
                                 </span>
                             )}
@@ -140,11 +162,16 @@ export default function ResultDetailPage() {
                                     SRP
                                 </span>
                             )}
+                            {linkedAnalysisHasOpportunity && (
+                                <span className="badge bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                    Oportunidade
+                                </span>
+                            )}
                         </div>
-                        <h1 className="text-xl font-semibold text-[var(--text-primary)] leading-tight mb-2">
+                        <h1 className="text-xl font-semibold text-[var(--color-text-primary)] leading-tight mb-2">
                             {result.objeto_compra || "Sem descrição"}
                         </h1>
-                        <p className="text-sm text-[var(--text-tertiary)] font-mono">
+                        <p className="text-sm text-[var(--color-text-muted)] font-mono">
                             {result.numero_controle_pncp}
                         </p>
                     </div>
@@ -163,7 +190,7 @@ export default function ResultDetailPage() {
                         )}
                         {result.status !== "discarded" && (
                             <button
-                                onClick={() => handleAction("discarded")}
+                                onClick={() => setDiscardConfirmOpen(true)}
                                 disabled={saving}
                                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
                             >
@@ -176,14 +203,14 @@ export default function ResultDetailPage() {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-1 mb-6 bg-[var(--bg-secondary)] rounded-xl p-1">
+            <div className="flex gap-1 mb-6 bg-[var(--color-bg-secondary)] rounded-xl p-1">
                 {tabs.map((tab) => (
                     <button
                         key={tab.id}
                         onClick={() => setActiveTab(tab.id)}
                         className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex-1 justify-center ${activeTab === tab.id
-                            ? "bg-purple-600 text-white shadow-lg shadow-purple-600/20"
-                            : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+                            ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
+                            : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]"
                             }`}
                     >
                         <tab.icon className="w-4 h-4" />
@@ -192,7 +219,7 @@ export default function ResultDetailPage() {
                             <span
                                 className={`px-2 py-0.5 rounded-full text-xs font-bold ${activeTab === tab.id
                                     ? "bg-white/20 text-white"
-                                    : "bg-purple-500/20 text-purple-400"
+                                    : "bg-emerald-500/20 text-emerald-500"
                                     }`}
                             >
                                 {tab.count}
@@ -208,6 +235,25 @@ export default function ResultDetailPage() {
                 {activeTab === "itens" && <ItemsTab items={result.items} />}
                 {activeTab === "documentos" && <DocumentsTab documents={result.documents} cnpjOrgao={result.cnpj_orgao} anoCompra={result.ano_compra} sequencialCompra={result.sequencial_compra} />}
             </div>
+
+            <ConfirmModal
+                isOpen={discardConfirmOpen}
+                title="Confirmar exclusão"
+                message={
+                    result.objeto_compra
+                        ? `Deseja realmente descartar este edital?\n\n"${result.objeto_compra}"`
+                        : "Deseja realmente descartar este edital?"
+                }
+                confirmLabel="Sim, descartar"
+                cancelLabel="Cancelar"
+                variant="danger"
+                isLoading={saving}
+                onCancel={() => setDiscardConfirmOpen(false)}
+                onConfirm={async () => {
+                    setDiscardConfirmOpen(false);
+                    await handleAction("discarded");
+                }}
+            />
         </div>
     );
 }
@@ -215,6 +261,8 @@ export default function ResultDetailPage() {
 // ─── General Info Tab ────────────────────────────────────────────────────────
 
 function GeneralTab({ result }: { result: SearchResultDetail }) {
+    const matchScopeLabel = getKeywordScopeLabel(result.keyword_match_scope);
+    const matchEvidence = result.keyword_match_evidence || [];
     const infoSections = [
         {
             title: "Órgão / Entidade",
@@ -281,7 +329,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
         <div className="space-y-4">
             {/* Summary Card */}
             <div className="card p-6">
-                <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">
+                <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3">
                     Resumo da Contratação
                 </h3>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -305,7 +353,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                         label="Documentos"
                         value={String(result.documents.length)}
                         icon={FileText}
-                        color="purple"
+                        color="emerald"
                     />
                     <StatMini
                         label="Situação"
@@ -320,21 +368,21 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
             {infoSections.map((section) => (
                 <div key={section.title} className="card p-6">
                     <div className="flex items-center gap-2 mb-4">
-                        <section.icon className="w-5 h-5 text-purple-400" />
-                        <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
+                        <section.icon className="w-5 h-5 text-emerald-500" />
+                        <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">
                             {section.title}
                         </h3>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {section.items.map((item) => (
                             <div key={item.label}>
-                                <span className="text-xs text-[var(--text-tertiary)] uppercase tracking-wide">
+                                <span className="text-xs text-[var(--color-text-muted)] uppercase tracking-wide">
                                     {item.label}
                                 </span>
                                 <p
                                     className={`text-sm mt-0.5 ${item.highlight
                                         ? "text-green-400 font-semibold"
-                                        : "text-[var(--text-primary)]"
+                                        : "text-[var(--color-text-primary)]"
                                         }`}
                                 >
                                     {item.value || "—"}
@@ -345,12 +393,47 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                 </div>
             ))}
 
+            {matchEvidence.length > 0 && (
+                <div className="card p-6">
+                    <div className="flex items-center gap-2 mb-3">
+                        <Info className="w-5 h-5 text-emerald-500" />
+                        <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">
+                            Por que este edital entrou
+                        </h3>
+                    </div>
+                    {matchScopeLabel && (
+                        <p className="text-xs mb-3" style={{ color: "var(--color-text-muted)" }}>
+                            Origem do match: {matchScopeLabel}
+                        </p>
+                    )}
+                    <div className="space-y-3">
+                        {matchEvidence.map((evidence, index) => (
+                            <div
+                                key={`${evidence.scope}-${evidence.keyword}-${index}`}
+                                className="rounded-lg border p-3"
+                                style={{ borderColor: "var(--color-border)" }}
+                            >
+                                <p className="text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
+                                    {evidence.scope === "item"
+                                        ? `Item ${evidence.item_numero ?? "?"}`
+                                        : "Objeto"}{" "}
+                                    • Palavra-chave: {evidence.keyword}
+                                </p>
+                                <p className="text-sm" style={{ color: "var(--color-text-primary)" }}>
+                                    {evidence.snippet}
+                                </p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {/* Links */}
             {(result.link_sistema_origem || result.link_processo_eletronico) && (
                 <div className="card p-6">
                     <div className="flex items-center gap-2 mb-4">
-                        <ExternalLink className="w-5 h-5 text-purple-400" />
-                        <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
+                        <ExternalLink className="w-5 h-5 text-emerald-500" />
+                        <h3 className="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">
                             Links Externos
                         </h3>
                     </div>
@@ -360,7 +443,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                                 href={result.link_sistema_origem}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="flex items-center gap-2 text-purple-400 hover:text-purple-300 transition-colors text-sm"
+                                className="flex items-center gap-2 text-emerald-500 hover:text-emerald-400 transition-colors text-sm"
                             >
                                 <ExternalLink className="w-4 h-4" />
                                 Sistema de Origem
@@ -372,7 +455,7 @@ function GeneralTab({ result }: { result: SearchResultDetail }) {
                                 href={result.link_processo_eletronico}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="flex items-center gap-2 text-purple-400 hover:text-purple-300 transition-colors text-sm"
+                                className="flex items-center gap-2 text-emerald-500 hover:text-emerald-400 transition-colors text-sm"
                             >
                                 <ExternalLink className="w-4 h-4" />
                                 Processo Eletrônico
@@ -392,8 +475,8 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
     if (items.length === 0) {
         return (
             <div className="card p-12 text-center">
-                <Package className="w-12 h-12 text-[var(--text-tertiary)] mx-auto mb-3 opacity-50" />
-                <p className="text-[var(--text-secondary)]">Nenhum item encontrado para este edital.</p>
+                <Package className="w-12 h-12 text-[var(--color-text-muted)] mx-auto mb-3 opacity-50" />
+                <p className="text-[var(--color-text-secondary)]">Nenhum item encontrado para este edital.</p>
             </div>
         );
     }
@@ -411,13 +494,13 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
                             <Package className="w-5 h-5 text-blue-400" />
                         </div>
                         <div>
-                            <p className="text-sm text-[var(--text-secondary)]">Total de itens</p>
-                            <p className="text-lg font-bold text-[var(--text-primary)]">{items.length}</p>
+                            <p className="text-sm text-[var(--color-text-secondary)]">Total de itens</p>
+                            <p className="text-lg font-bold text-[var(--color-text-primary)]">{items.length}</p>
                         </div>
                     </div>
                     {totalValue > 0 && (
                         <div className="text-right">
-                            <p className="text-sm text-[var(--text-secondary)]">Valor total estimado</p>
+                            <p className="text-sm text-[var(--color-text-secondary)]">Valor total estimado</p>
                             <p className="text-lg font-bold text-green-400">{formatCurrency(totalValue)}</p>
                         </div>
                     )}
@@ -429,27 +512,27 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
                 {items.map((item, index) => (
                     <div
                         key={item.id}
-                        className="card p-5 hover:border-purple-500/30 transition-all"
+                        className="card p-5 hover:border-emerald-500/30 transition-all"
                         style={{ animationDelay: `${index * 50}ms` }}
                     >
                         <div className="flex items-start gap-4">
                             {/* Item number badge */}
-                            <div className="shrink-0 w-10 h-10 rounded-lg bg-purple-500/15 flex items-center justify-center">
-                                <span className="text-sm font-bold text-purple-400">
+                            <div className="shrink-0 w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center">
+                                <span className="text-sm font-bold text-emerald-500">
                                     {item.numero_item}
                                 </span>
                             </div>
 
                             <div className="flex-1 min-w-0">
                                 {/* Description */}
-                                <h4 className="text-sm font-medium text-[var(--text-primary)] mb-2 leading-relaxed">
+                                <h4 className="text-sm font-medium text-[var(--color-text-primary)] mb-2 leading-relaxed">
                                     {item.descricao || "Sem descrição"}
                                 </h4>
 
                                 {/* Tags */}
                                 <div className="flex flex-wrap gap-2 mb-3">
                                     {item.material_ou_servico_nome && (
-                                        <span className="badge bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+                                        <span className="badge bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]">
                                             {item.material_ou_servico === "M" ? "📦" : "🔧"}{" "}
                                             {item.material_ou_servico_nome}
                                         </span>
@@ -460,7 +543,7 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
                                         </span>
                                     )}
                                     {item.criterio_julgamento_nome && (
-                                        <span className="badge bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+                                        <span className="badge bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]">
                                             ⚖️ {item.criterio_julgamento_nome}
                                         </span>
                                     )}
@@ -479,23 +562,23 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
                                 {/* Values grid */}
                                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                                     <div>
-                                        <span className="text-xs text-[var(--text-tertiary)]">Quantidade</span>
-                                        <p className="text-sm font-medium text-[var(--text-primary)]">
+                                        <span className="text-xs text-[var(--color-text-muted)]">Quantidade</span>
+                                        <p className="text-sm font-medium text-[var(--color-text-primary)]">
                                             {item.quantidade != null
                                                 ? `${item.quantidade} ${item.unidade_medida || ""}`
                                                 : "—"}
                                         </p>
                                     </div>
                                     <div>
-                                        <span className="text-xs text-[var(--text-tertiary)]">Valor Unitário</span>
-                                        <p className="text-sm font-medium text-[var(--text-primary)]">
+                                        <span className="text-xs text-[var(--color-text-muted)]">Valor Unitário</span>
+                                        <p className="text-sm font-medium text-[var(--color-text-primary)]">
                                             {item.valor_unitario_estimado != null && !item.orcamento_sigiloso
                                                 ? formatCurrency(item.valor_unitario_estimado)
                                                 : "—"}
                                         </p>
                                     </div>
                                     <div>
-                                        <span className="text-xs text-[var(--text-tertiary)]">Valor Total</span>
+                                        <span className="text-xs text-[var(--color-text-muted)]">Valor Total</span>
                                         <p className="text-sm font-semibold text-green-400">
                                             {item.valor_total != null && !item.orcamento_sigiloso
                                                 ? formatCurrency(item.valor_total)
@@ -503,8 +586,8 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
                                         </p>
                                     </div>
                                     <div>
-                                        <span className="text-xs text-[var(--text-tertiary)]">Categoria</span>
-                                        <p className="text-sm font-medium text-[var(--text-primary)]">
+                                        <span className="text-xs text-[var(--color-text-muted)]">Categoria</span>
+                                        <p className="text-sm font-medium text-[var(--color-text-primary)]">
                                             {item.item_categoria_nome || "—"}
                                         </p>
                                     </div>
@@ -512,11 +595,11 @@ function ItemsTab({ items }: { items: ResultItem[] }) {
 
                                 {/* Additional info */}
                                 {item.informacao_complementar && (
-                                    <div className="mt-3 p-3 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)]">
-                                        <p className="text-xs text-[var(--text-tertiary)] mb-1">
+                                    <div className="mt-3 p-3 rounded-lg bg-[var(--color-bg-main)] border border-[var(--color-border)]">
+                                        <p className="text-xs text-[var(--color-text-muted)] mb-1">
                                             Informação Complementar
                                         </p>
-                                        <p className="text-sm text-[var(--text-secondary)]">
+                                        <p className="text-sm text-[var(--color-text-secondary)]">
                                             {item.informacao_complementar}
                                         </p>
                                     </div>
@@ -546,8 +629,8 @@ function DocumentsTab({
     if (documents.length === 0) {
         return (
             <div className="card p-12 text-center">
-                <FileText className="w-12 h-12 text-[var(--text-tertiary)] mx-auto mb-3 opacity-50" />
-                <p className="text-[var(--text-secondary)]">
+                <FileText className="w-12 h-12 text-[var(--color-text-muted)] mx-auto mb-3 opacity-50" />
+                <p className="text-[var(--color-text-secondary)]">
                     Nenhum documento encontrado para este edital.
                 </p>
             </div>
@@ -565,10 +648,10 @@ function DocumentsTab({
 
     const docTypeColors: Record<string, string> = {
         Edital: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-        "Termo de Referência": "bg-purple-500/10 text-purple-400 border-purple-500/20",
+        "Termo de Referência": "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
         "Estudo Técnico Preliminar": "bg-green-500/10 text-green-400 border-green-500/20",
         DFD: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
-        default: "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border-[var(--border-color)]",
+        default: "bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border-[var(--color-border)]",
     };
 
     return (
@@ -576,14 +659,14 @@ function DocumentsTab({
             {/* Summary */}
             <div className="card p-4">
                 <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-purple-500/10">
-                        <FileText className="w-5 h-5 text-purple-400" />
+                    <div className="p-2 rounded-lg bg-emerald-500/10">
+                        <FileText className="w-5 h-5 text-emerald-500" />
                     </div>
                     <div>
-                        <p className="text-sm text-[var(--text-secondary)]">
+                        <p className="text-sm text-[var(--color-text-secondary)]">
                             Documentos disponíveis
                         </p>
-                        <p className="text-lg font-bold text-[var(--text-primary)]">
+                        <p className="text-lg font-bold text-[var(--color-text-primary)]">
                             {documents.length}
                         </p>
                     </div>
@@ -603,7 +686,7 @@ function DocumentsTab({
                     return (
                         <div
                             key={doc.id}
-                            className="card p-4 hover:border-purple-500/30 transition-all group"
+                            className="card p-4 hover:border-emerald-500/30 transition-all group"
                             style={{ animationDelay: `${index * 50}ms` }}
                         >
                             <div className="flex items-start gap-3">
@@ -614,17 +697,17 @@ function DocumentsTab({
                                 </div>
 
                                 <div className="flex-1 min-w-0">
-                                    <h4 className="text-sm font-medium text-[var(--text-primary)] truncate mb-1">
+                                    <h4 className="text-sm font-medium text-[var(--color-text-primary)] truncate mb-1">
                                         {doc.titulo || "Documento sem título"}
                                     </h4>
                                     <div className="flex items-center gap-2 flex-wrap">
                                         {doc.tipo_documento_nome && (
-                                            <span className="text-xs text-[var(--text-tertiary)]">
+                                            <span className="text-xs text-[var(--color-text-muted)]">
                                                 {doc.tipo_documento_nome}
                                             </span>
                                         )}
                                         {doc.data_publicacao_pncp && (
-                                            <span className="text-xs text-[var(--text-tertiary)]">
+                                            <span className="text-xs text-[var(--color-text-muted)]">
                                                 • {formatDate(doc.data_publicacao_pncp)}
                                             </span>
                                         )}
@@ -637,7 +720,7 @@ function DocumentsTab({
                                             href={downloadUrl}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            className="shrink-0 p-2 rounded-lg text-[var(--text-tertiary)] hover:text-purple-400 hover:bg-purple-500/10 transition-all opacity-0 group-hover:opacity-100"
+                                            className="shrink-0 p-2 rounded-lg text-[var(--color-text-muted)] hover:text-emerald-500 hover:bg-emerald-500/10 transition-all opacity-0 group-hover:opacity-100"
                                             title="Baixar documento"
                                         >
                                             <Download className="w-4 h-4" />
@@ -656,7 +739,7 @@ function DocumentsTab({
                     href={`https://pncp.gov.br/app/editais/${cnpjOrgao}/${anoCompra}/${sequencialCompra}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-2 text-sm text-purple-400 hover:text-purple-300 transition-colors"
+                    className="flex items-center gap-2 text-sm text-emerald-500 hover:text-emerald-400 transition-colors"
                 >
                     <ExternalLink className="w-4 h-4" />
                     Ver todos os documentos no Portal PNCP
@@ -683,18 +766,18 @@ function StatMini({
     const colorMap: Record<string, string> = {
         green: "bg-green-500/10 text-green-400",
         blue: "bg-blue-500/10 text-blue-400",
-        purple: "bg-purple-500/10 text-purple-400",
+        emerald: "bg-emerald-500/10 text-emerald-500",
         yellow: "bg-yellow-500/10 text-yellow-400",
     };
 
     return (
-        <div className="flex items-center gap-3 p-3 rounded-xl bg-[var(--bg-primary)] border border-[var(--border-color)]">
+        <div className="flex items-center gap-3 p-3 rounded-xl bg-[var(--color-bg-main)] border border-[var(--color-border)]">
             <div className={`p-2 rounded-lg ${colorMap[color]}`}>
                 <Icon className="w-4 h-4" />
             </div>
             <div className="min-w-0">
-                <p className="text-xs text-[var(--text-tertiary)] truncate">{label}</p>
-                <p className="text-sm font-semibold text-[var(--text-primary)] truncate">
+                <p className="text-xs text-[var(--color-text-muted)] truncate">{label}</p>
+                <p className="text-sm font-semibold text-[var(--color-text-primary)] truncate">
                     {value}
                 </p>
             </div>

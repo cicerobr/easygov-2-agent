@@ -53,6 +53,7 @@ class AutomationCreate(BaseModel):
     # Post-search filters
     keywords: Optional[list[str]] = None
     keywords_exclude: Optional[list[str]] = None
+    search_in_items: bool = True
     valor_minimo: Optional[float] = None
     valor_maximo: Optional[float] = None
 
@@ -76,6 +77,7 @@ class AutomationUpdate(BaseModel):
     codigo_modo_disputa: Optional[int] = None
     keywords: Optional[list[str]] = None
     keywords_exclude: Optional[list[str]] = None
+    search_in_items: Optional[bool] = None
     valor_minimo: Optional[float] = None
     valor_maximo: Optional[float] = None
     schedule_type: Optional[str] = Field(None, pattern="^(interval|daily|custom)$")
@@ -98,6 +100,7 @@ class AutomationResponse(BaseModel):
     codigo_modo_disputa: Optional[int]
     keywords: Optional[list[str]]
     keywords_exclude: Optional[list[str]]
+    search_in_items: bool
     valor_minimo: Optional[float]
     valor_maximo: Optional[float]
     schedule_type: str
@@ -145,13 +148,19 @@ class SearchResultResponse(BaseModel):
     municipio: Optional[str]
     link_sistema_origem: Optional[str]
     link_processo_eletronico: Optional[str]
+    codigo_unidade_compradora: Optional[str]
+    nome_unidade_compradora: Optional[str]
     srp: Optional[bool]
+    keyword_match_scope: Optional[str]
+    keyword_match_evidence: Optional[list[dict]]
     status: str
     relevance_score: Optional[float]
     relevance_reason: Optional[str]
     is_read: bool
     found_at: datetime
     acted_at: Optional[datetime]
+    dispute_started_at: Optional[datetime]
+    dispute_finished_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
 
@@ -227,13 +236,19 @@ class SearchResultDetailResponse(BaseModel):
     municipio: Optional[str]
     link_sistema_origem: Optional[str]
     link_processo_eletronico: Optional[str]
+    codigo_unidade_compradora: Optional[str]
+    nome_unidade_compradora: Optional[str]
     srp: Optional[bool]
+    keyword_match_scope: Optional[str]
+    keyword_match_evidence: Optional[list[dict]]
     status: str
     relevance_score: Optional[float]
     relevance_reason: Optional[str]
     is_read: bool
     found_at: datetime
     acted_at: Optional[datetime]
+    dispute_started_at: Optional[datetime]
+    dispute_finished_at: Optional[datetime]
 
     # Nested data
     items: list[ResultItemResponse]
@@ -269,6 +284,16 @@ class AutomationRunResponse(BaseModel):
     pages_searched: int
 
     model_config = {"from_attributes": True}
+
+
+class AutomationLearningSuggestionResponse(BaseModel):
+    automation_id: uuid.UUID
+    disputed_count: int
+    won_count: int
+    lost_count: int
+    win_rate: float
+    top_loss_reasons: list[str]
+    suggested_actions: list[str]
 
 
 # ─── Edital Analysis ─────────────────────────────────────────────────────────
@@ -307,3 +332,161 @@ class AnalyzeFromPncpRequest(BaseModel):
 
 class AnalyzeBatchFromPncpRequest(BaseModel):
     document_ids: list[uuid.UUID]
+
+
+# ─── Disputes ────────────────────────────────────────────────────────────────
+
+class DisputeStartResponse(BaseModel):
+    id: uuid.UUID
+    status: str
+    dispute_started_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class DisputeFinishRequest(BaseModel):
+    action: str = Field(..., pattern="^(won|lost)$")
+
+
+class DisputeFinishResponse(BaseModel):
+    id: uuid.UUID
+    status: str
+    dispute_finished_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class DisputeStatsResponse(BaseModel):
+    em_disputa: int
+    vencidos: int
+    perdidos: int
+    total: int
+
+
+class DisputeMarginSuggestion(BaseModel):
+    margem_percentual: float
+    preco_venda: float
+    imposto_estimado: float
+    lucro_liquido_estimado: float
+
+
+class DisputeItemFinancialInput(BaseModel):
+    preco_fornecedor: float = Field(..., ge=0)
+    mao_obra: float = Field(..., ge=0)
+    materiais_consumo: float = Field(..., ge=0)
+    equipamentos: float = Field(..., ge=0)
+    frete_logistica: float = Field(..., ge=0)
+    aliquota_imposto_percentual: float = Field(..., ge=0, le=100)
+
+
+class DisputeItemFinancialResponse(BaseModel):
+    id: uuid.UUID
+    result_id: uuid.UUID
+    result_item_id: uuid.UUID
+    preco_fornecedor: float
+    mao_obra: float
+    materiais_consumo: float
+    equipamentos: float
+    frete_logistica: float
+    aliquota_imposto_percentual: float
+    custos_totais: float
+    precos_sugeridos: list[DisputeMarginSuggestion]
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DisputeItemFinancialRow(BaseModel):
+    result_item_id: uuid.UUID
+    numero_item: int
+    descricao: Optional[str]
+    quantidade: Optional[float]
+    unidade_medida: Optional[str]
+    financial: Optional[DisputeItemFinancialResponse]
+
+
+# ─── Pipeline, Score & Evidence ──────────────────────────────────────────────
+
+class ResultPipelineStateResponse(BaseModel):
+    result_id: uuid.UUID
+    pipeline_stage: str
+    stage_started_at: datetime
+    stage_finished_at: Optional[datetime]
+    stage_error: Optional[str]
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ResultPipelineKpisResponse(BaseModel):
+    total_results: int
+    triaged_total: int
+    pending_total: int
+    dispute_total: int
+    won_total: int
+    lost_total: int
+    pending_to_saved_rate: float
+    saved_to_dispute_rate: float
+    dispute_win_rate: float
+    analysis_success_rate: float
+    analysis_avg_processing_ms: float
+    technical_evidence_coverage_rate: float
+
+
+class PriorityScoreComponent(BaseModel):
+    label: str
+    score: float
+    max_score: float
+    reason: str
+
+
+class PriorityScoreResponse(BaseModel):
+    result_id: uuid.UUID
+    total_score: float
+    recommendation: str
+    components: list[PriorityScoreComponent]
+
+
+class AnalysisTechnicalEvidenceResponse(BaseModel):
+    id: uuid.UUID
+    analysis_id: uuid.UUID
+    result_id: Optional[uuid.UUID]
+    clause_ref: Optional[str]
+    source_text: str
+    confidence: float
+    is_human_validated: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ValidateTechnicalEvidenceRequest(BaseModel):
+    is_human_validated: bool = True
+
+
+# ─── Dispute Timeline & Feedback ─────────────────────────────────────────────
+
+class DisputeTimelineEventResponse(BaseModel):
+    event_type: str
+    actor_type: str
+    created_at: datetime
+    payload: Optional[dict]
+
+
+class DisputeFeedbackRequest(BaseModel):
+    loss_reason: Optional[str] = None
+    winner_price_delta: Optional[float] = None
+    suggested_filter_adjustments: Optional[dict] = None
+
+
+class DisputeFeedbackResponse(BaseModel):
+    id: uuid.UUID
+    result_id: uuid.UUID
+    loss_reason: Optional[str]
+    winner_price_delta: Optional[float]
+    suggested_filter_adjustments: Optional[dict]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

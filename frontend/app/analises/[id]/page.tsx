@@ -22,6 +22,11 @@ import {
     Gavel,
 } from "lucide-react";
 import { api, EditalAnalysis } from "@/lib/api";
+import { getAnalysisTags } from "@/lib/analysis-tags";
+import {
+    getTechnicalQualificationItems,
+    hasNoTechnicalQualificationRequirement,
+} from "@/lib/technical-requirements";
 
 export default function AnaliseDetailPage() {
     const { id } = useParams();
@@ -74,6 +79,8 @@ export default function AnaliseDetailPage() {
         return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
     };
 
+    const tags = getAnalysisTags(data);
+
     const tabs = [
         { id: "resumo", label: "Resumo", icon: FileText },
         { id: "itens", label: "Itens", icon: Package },
@@ -106,8 +113,8 @@ export default function AnaliseDetailPage() {
                     <div
                         className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
                         style={{
-                            background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-                            boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)",
+                            background: "linear-gradient(135deg, var(--color-primary), var(--color-primary-hover))",
+                            boxShadow: "0 4px 12px var(--color-primary-glow)",
                         }}
                     >
                         <Bot className="w-6 h-6 text-white" />
@@ -155,7 +162,7 @@ export default function AnaliseDetailPage() {
                 {data?.objeto_resumo && (
                     <div
                         className="mt-4 p-4 rounded-lg"
-                        style={{ background: "rgba(99, 102, 241, 0.05)", border: "1px solid rgba(99, 102, 241, 0.15)" }}
+                        style={{ background: "rgba(99, 102, 241, 0.05)", border: "1px solid var(--color-primary-subtle)" }}
                     >
                         <p className="text-sm font-medium" style={{ color: "var(--color-primary)" }}>
                             Objeto da Contratação
@@ -163,6 +170,34 @@ export default function AnaliseDetailPage() {
                         <p className="text-sm mt-1" style={{ color: "var(--color-text-primary)" }}>
                             {data.objeto_detalhado || data.objeto_resumo}
                         </p>
+                    </div>
+                )}
+                {tags.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                        {tags.map((tag) => {
+                            const isOpportunity = tag.toLocaleLowerCase("pt-BR") === "oportunidade";
+                            return (
+                                <span
+                                    key={tag}
+                                    className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border"
+                                    style={
+                                        isOpportunity
+                                            ? {
+                                                background: "rgba(16, 185, 129, 0.12)",
+                                                color: "#34D399",
+                                                borderColor: "rgba(16, 185, 129, 0.35)",
+                                            }
+                                            : {
+                                                background: "var(--color-bg-tertiary)",
+                                                color: "var(--color-text-secondary)",
+                                                borderColor: "var(--color-border)",
+                                            }
+                                    }
+                                >
+                                    {tag}
+                                </span>
+                            );
+                        })}
                     </div>
                 )}
             </div>
@@ -203,7 +238,7 @@ export default function AnaliseDetailPage() {
                                     onClick={() => setActiveTab(tab.id)}
                                     className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex-1 justify-center"
                                     style={{
-                                        background: activeTab === tab.id ? "rgba(99, 102, 241, 0.15)" : "transparent",
+                                        background: activeTab === tab.id ? "var(--color-primary-subtle)" : "transparent",
                                         color: activeTab === tab.id ? "var(--color-primary)" : "var(--color-text-muted)",
                                     }}
                                 >
@@ -382,19 +417,67 @@ function ItensTab({ data, formatCurrency }: { data: any; formatCurrency: (v: any
 
 function HabilitacaoTab({ data }: { data: any }) {
     const hab = data?.habilitacao || {};
+    const technicalItems = getTechnicalQualificationItems(data);
+    const hasNoTechnicalRequirement = hasNoTechnicalQualificationRequirement(data);
     const sections = [
         { key: "juridica", label: "Habilitação Jurídica" },
         { key: "fiscal", label: "Regularidade Fiscal" },
         { key: "trabalhista", label: "Regularidade Trabalhista" },
         { key: "economica", label: "Qualificação Econômico-Financeira" },
-        { key: "tecnica", label: "Qualificação Técnica" },
     ];
 
     const hasAny = sections.some((s) => hab[s.key]?.length > 0);
-    if (!hasAny) return <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>Requisitos de habilitação não identificados.</p>;
+    if (!hasAny && technicalItems.length === 0 && !hasNoTechnicalRequirement) {
+        return (
+            <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+                Requisitos de habilitação não identificados.
+            </p>
+        );
+    }
 
     return (
         <div className="space-y-6">
+            <div
+                className="rounded-lg p-4"
+                style={{
+                    background: "var(--color-bg-secondary)",
+                    border: "1px solid var(--color-border)",
+                }}
+            >
+                <h4
+                    className="text-sm font-semibold mb-2"
+                    style={{ color: "var(--color-text-primary)" }}
+                >
+                    Qualificação Técnica
+                </h4>
+                {hasNoTechnicalRequirement ? (
+                    <p className="text-sm" style={{ color: "var(--color-success)" }}>
+                        Não há exigência de atestado de capacidade técnica ou documentação
+                        técnica específica.
+                    </p>
+                ) : technicalItems.length > 0 ? (
+                    <ul className="space-y-1.5">
+                        {technicalItems.map((item: string, idx: number) => (
+                            <li
+                                key={`${idx}-${item.slice(0, 20)}`}
+                                className="flex items-start gap-2 text-sm"
+                                style={{ color: "var(--color-text-secondary)" }}
+                            >
+                                <CheckCircle2
+                                    className="w-4 h-4 flex-shrink-0 mt-0.5"
+                                    style={{ color: "var(--color-success)" }}
+                                />
+                                <span className="whitespace-pre-wrap">{item}</span>
+                            </li>
+                        ))}
+                    </ul>
+                ) : (
+                    <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+                        A análise não encontrou detalhes suficientes sobre qualificação técnica.
+                    </p>
+                )}
+            </div>
+
             {sections.map((s) => {
                 const items = hab[s.key] || [];
                 if (items.length === 0) return null;

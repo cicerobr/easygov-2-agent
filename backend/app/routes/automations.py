@@ -1,20 +1,40 @@
 """
 API Routes — Search Automations CRUD
 """
+import asyncio
+import logging
 import uuid
 from datetime import datetime, timedelta, time as dt_time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.models import SearchAutomation, AutomationRun
+from app.database import AsyncSessionLocal, get_db
+from app.models import (
+    AnalysisTechnicalEvidence,
+    AutomationRun,
+    DisputeEvent,
+    DisputeFeedback,
+    DisputeItemFinancial,
+    EditalAnalysis,
+    Notification,
+    ResultDocument,
+    ResultItem,
+    ResultPipelineState,
+    SearchAutomation,
+    SearchResult,
+)
 from app.schemas import (
-    AutomationCreate, AutomationUpdate, AutomationResponse, AutomationRunResponse,
+    AutomationCreate,
+    AutomationLearningSuggestionResponse,
+    AutomationResponse,
+    AutomationRunResponse,
+    AutomationUpdate,
 )
 
 router = APIRouter(prefix="/automations", tags=["Automações"])
+logger = logging.getLogger(__name__)
 
 # TODO: Replace with real auth dependency
 TEMP_USER_ID = None  # Will be set via header for now
@@ -23,6 +43,52 @@ TEMP_USER_ID = None  # Will be set via header for now
 async def get_current_user_id(x_user_id: str = Query(..., alias="user_id")) -> uuid.UUID:
     """Temporary auth: pass user_id as query param. Replace with JWT auth."""
     return uuid.UUID(x_user_id)
+
+
+async def _execute_automation_run_in_background(automation_id: uuid.UUID, run_id: uuid.UUID):
+    from app.agent.engine import run_automation
+
+    try:
+        async with AsyncSessionLocal() as task_db:
+            automation = (
+                await task_db.execute(
+                    select(SearchAutomation).where(SearchAutomation.id == automation_id)
+                )
+            ).scalar_one_or_none()
+            if not automation:
+                return
+
+            run = (
+                await task_db.execute(
+                    select(AutomationRun).where(
+                        AutomationRun.id == run_id,
+                        AutomationRun.automation_id == automation_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if not run:
+                return
+
+            await run_automation(automation, task_db, run=run)
+    except Exception as exc:
+        logger.exception(
+            "Unexpected failure while processing automation run in background "
+            "(automation_id=%s, run_id=%s): %s",
+            automation_id,
+            run_id,
+            exc,
+        )
+        async with AsyncSessionLocal() as task_db:
+            run = (
+                await task_db.execute(
+                    select(AutomationRun).where(AutomationRun.id == run_id)
+                )
+            ).scalar_one_or_none()
+            if run and run.status == "running":
+                run.status = "error"
+                run.error_message = f"Falha inesperada: {str(exc)[:450]}"
+                run.finished_at = datetime.utcnow()
+                await task_db.commit()
 
 
 @router.get("", response_model=list[AutomationResponse])
@@ -62,6 +128,7 @@ async def create_automation(
         codigo_modo_disputa=data.codigo_modo_disputa,
         keywords=data.keywords,
         keywords_exclude=data.keywords_exclude,
+        search_in_items=data.search_in_items,
         valor_minimo=data.valor_minimo,
         valor_maximo=data.valor_maximo,
         schedule_type=data.schedule_type,
@@ -149,8 +216,63 @@ async def delete_automation(
     if not automation:
         raise HTTPException(status_code=404, detail="Automação não encontrada")
 
-    await db.delete(automation)
-    await db.commit()
+    try:
+        result_ids_subquery = select(SearchResult.id).where(
+            SearchResult.automation_id == automation_id,
+            SearchResult.user_id == user_id,
+        )
+
+        await db.execute(
+            delete(DisputeItemFinancial).where(
+                DisputeItemFinancial.result_id.in_(result_ids_subquery)
+            )
+        )
+        await db.execute(
+            delete(ResultPipelineState).where(
+                ResultPipelineState.result_id.in_(result_ids_subquery)
+            )
+        )
+        await db.execute(
+            delete(DisputeEvent).where(DisputeEvent.result_id.in_(result_ids_subquery))
+        )
+        await db.execute(
+            delete(DisputeFeedback).where(DisputeFeedback.result_id.in_(result_ids_subquery))
+        )
+        await db.execute(
+            delete(AnalysisTechnicalEvidence).where(
+                AnalysisTechnicalEvidence.result_id.in_(result_ids_subquery)
+            )
+        )
+        await db.execute(
+            delete(EditalAnalysis).where(EditalAnalysis.result_id.in_(result_ids_subquery))
+        )
+        await db.execute(
+            delete(ResultDocument).where(ResultDocument.result_id.in_(result_ids_subquery))
+        )
+        await db.execute(
+            delete(ResultItem).where(ResultItem.result_id.in_(result_ids_subquery))
+        )
+        await db.execute(
+            delete(SearchResult).where(
+                SearchResult.automation_id == automation_id,
+                SearchResult.user_id == user_id,
+            )
+        )
+        await db.execute(delete(AutomationRun).where(AutomationRun.automation_id == automation_id))
+        await db.execute(delete(Notification).where(Notification.automation_id == automation_id))
+        await db.execute(
+            delete(SearchAutomation).where(
+                SearchAutomation.id == automation_id,
+                SearchAutomation.user_id == user_id,
+            )
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Falha ao excluir automação e seus dados relacionados: {exc}",
+        ) from exc
 
 
 @router.post("/{automation_id}/run", response_model=AutomationRunResponse)
@@ -159,8 +281,7 @@ async def trigger_automation_run(
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually trigger an automation run."""
-    from app.agent.engine import run_automation
+    """Manually trigger an automation run asynchronously."""
 
     result = await db.execute(
         select(SearchAutomation).where(
@@ -172,7 +293,15 @@ async def trigger_automation_run(
     if not automation:
         raise HTTPException(status_code=404, detail="Automação não encontrada")
 
-    run = await run_automation(automation, db)
+    run = AutomationRun(
+        automation_id=automation.id,
+        status="running",
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    asyncio.create_task(_execute_automation_run_in_background(automation.id, run.id))
     return run
 
 
@@ -195,3 +324,81 @@ async def list_automation_runs(
         .limit(limit)
     )
     return result.scalars().all()
+
+
+@router.get(
+    "/{automation_id}/learning-suggestions",
+    response_model=AutomationLearningSuggestionResponse,
+)
+async def get_automation_learning_suggestions(
+    automation_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    automation = (
+        await db.execute(
+            select(SearchAutomation).where(
+                SearchAutomation.id == automation_id,
+                SearchAutomation.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not automation:
+        raise HTTPException(status_code=404, detail="Automação não encontrada")
+
+    dispute_stats = (
+        await db.execute(
+            select(
+                func.count().filter(SearchResult.status == "dispute_open").label("open"),
+                func.count().filter(SearchResult.status == "dispute_won").label("won"),
+                func.count().filter(SearchResult.status == "dispute_lost").label("lost"),
+            ).where(
+                SearchResult.automation_id == automation_id,
+                SearchResult.user_id == user_id,
+            )
+        )
+    ).one()
+
+    open_count = dispute_stats.open or 0
+    won_count = dispute_stats.won or 0
+    lost_count = dispute_stats.lost or 0
+    disputed_count = open_count + won_count + lost_count
+    win_rate = round((won_count / (won_count + lost_count)) * 100, 2) if (won_count + lost_count) else 0
+
+    reasons = (
+        await db.execute(
+            select(DisputeFeedback.loss_reason, func.count().label("qty"))
+            .join(SearchResult, SearchResult.id == DisputeFeedback.result_id)
+            .where(
+                SearchResult.automation_id == automation_id,
+                SearchResult.user_id == user_id,
+                DisputeFeedback.loss_reason.is_not(None),
+            )
+            .group_by(DisputeFeedback.loss_reason)
+            .order_by(func.count().desc())
+            .limit(5)
+        )
+    ).all()
+    top_loss_reasons = [str(row.loss_reason) for row in reasons if row.loss_reason]
+
+    suggestions: list[str] = []
+    if win_rate < 30:
+        suggestions.append("Refine palavras-chave para reduzir editais com baixa aderência.")
+    if lost_count > won_count:
+        suggestions.append("Revisar competitividade de preço por item antes de entrar em disputa.")
+    if any("prazo" in reason.lower() for reason in top_loss_reasons):
+        suggestions.append("Priorizar editais com maior antecedência até o encerramento.")
+    if any("técnic" in reason.lower() or "tecnic" in reason.lower() for reason in top_loss_reasons):
+        suggestions.append("Aplicar validação técnica obrigatória antes de iniciar disputa.")
+    if not suggestions:
+        suggestions.append("Manter estratégia atual e ampliar cobertura de órgãos com maior taxa de vitória.")
+
+    return AutomationLearningSuggestionResponse(
+        automation_id=automation_id,
+        disputed_count=disputed_count,
+        won_count=won_count,
+        lost_count=lost_count,
+        win_rate=win_rate,
+        top_loss_reasons=top_loss_reasons,
+        suggested_actions=suggestions,
+    )

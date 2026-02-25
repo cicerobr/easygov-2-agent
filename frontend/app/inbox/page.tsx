@@ -1,114 +1,167 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { api, type Automation, type PaginatedResults } from "@/lib/api";
-import { formatCurrency, formatDate, formatDateTime, timeAgo } from "@/lib/utils";
+import {
+    api,
+    type Automation,
+    type PaginatedResults,
+    type SearchResult,
+} from "@/lib/api";
+import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
 import {
     Inbox,
-    Bookmark,
-    X,
+    CheckCircle2,
+    XCircle,
+    Bot,
     ChevronLeft,
     ChevronRight,
-    ChevronDown,
-    ChevronUp,
-    ExternalLink,
     Building2,
     MapPin,
     Calendar,
     DollarSign,
-    CheckSquare,
-    Square,
     Loader2,
     FileText,
+    Check,
     ArrowRight,
-    Bot,
 } from "lucide-react";
+import { SkeletonList } from "@/components/skeleton";
+import { useToast } from "@/components/toast";
+import { ConfirmModal } from "@/components/confirm-modal";
+import {
+    getKeywordScopeBadgeClass,
+    getKeywordScopeLabel,
+    summarizeKeywordEvidence,
+} from "@/lib/keyword-evidence";
+
+function filterHiddenResults(
+    payload: PaginatedResults,
+    hiddenIds: Set<string>
+): PaginatedResults | null {
+    const filteredData = payload.data.filter((item) => !hiddenIds.has(item.id));
+    const removedCount = payload.data.length - filteredData.length;
+    const nextTotal = Math.max(0, payload.total - removedCount);
+
+    if (nextTotal <= 0 || filteredData.length === 0) {
+        return null;
+    }
+
+    return {
+        ...payload,
+        data: filteredData,
+        total: nextTotal,
+        total_pages: Math.max(1, Math.ceil(nextTotal / Math.max(1, payload.page_size))),
+    };
+}
 
 export default function InboxPage() {
     const router = useRouter();
+    const toast = useToast();
     const [automations, setAutomations] = useState<Automation[]>([]);
-    const [resultsByAutomation, setResultsByAutomation] = useState<Record<string, PaginatedResults>>({});
-    const [pagesByAutomation, setPagesByAutomation] = useState<Record<string, number>>({});
+    const [resultsByAutomation, setResultsByAutomation] = useState<
+        Record<string, PaginatedResults>
+    >({});
     const [loading, setLoading] = useState(true);
-    const [loadingAutomationIds, setLoadingAutomationIds] = useState<Set<string>>(new Set());
-    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-    const [collapsedAutomationIds, setCollapsedAutomationIds] = useState<Set<string>>(new Set());
     const [actioning, setActioning] = useState<string | null>(null);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [pagesByAutomation, setPagesByAutomation] = useState<
+        Record<string, number>
+    >({});
+    const [hiddenResultIds, setHiddenResultIds] = useState<Set<string>>(new Set());
+    const [discardTarget, setDiscardTarget] = useState<{
+        id: string;
+        automationId: string;
+        objeto: string | null;
+    } | null>(null);
+    const [batchDiscardConfirmOpen, setBatchDiscardConfirmOpen] = useState(false);
 
-    const loadAutomationsAndResults = useCallback(async () => {
-        setLoading(true);
+    function removeResultsFromState(ids: string[]) {
+        if (ids.length === 0) return;
+        const idSet = new Set(ids);
+        setHiddenResultIds((prev) => {
+            const next = new Set(prev);
+            ids.forEach((id) => next.add(id));
+            return next;
+        });
+
+        setResultsByAutomation((prev) => {
+            const next: Record<string, PaginatedResults> = {};
+            for (const [automationId, payload] of Object.entries(prev)) {
+                const filteredData = payload.data.filter((item) => !idSet.has(item.id));
+                const removedCount = payload.data.length - filteredData.length;
+                const nextTotal = Math.max(0, payload.total - removedCount);
+
+                if (nextTotal <= 0 || filteredData.length === 0) {
+                    continue;
+                }
+                next[automationId] = {
+                    ...payload,
+                    data: filteredData,
+                    total: nextTotal,
+                    total_pages: Math.max(
+                        1,
+                        Math.ceil(nextTotal / Math.max(1, payload.page_size))
+                    ),
+                };
+            }
+            return next;
+        });
+    }
+
+    const loadAutomationsAndResults = useCallback(async (hiddenIdsOverride?: Set<string>) => {
+        const hiddenIds = hiddenIdsOverride ?? hiddenResultIds;
         try {
             const autos = await api.listAutomations();
             setAutomations(autos);
-
-            const entries = await Promise.all(
-                autos.map(async (auto) => {
-                    const data = await api.listResults({
-                        status: "pending",
-                        automation_id: auto.id,
-                        page: 1,
-                        page_size: 15,
-                    });
-                    return [auto.id, data] as const;
-                })
-            );
-            setCollapsedAutomationIds((prev) => {
-                const validIds = new Set(autos.map((a) => a.id));
-                return new Set([...prev].filter((id) => validIds.has(id)));
-            });
-            setPagesByAutomation(
-                autos.reduce<Record<string, number>>((acc, auto) => {
-                    acc[auto.id] = 1;
-                    return acc;
-                }, {})
-            );
-            setResultsByAutomation(Object.fromEntries(entries));
+            const entries: Record<string, PaginatedResults> = {};
+            for (const a of autos) {
+                const res = await api.listResults({
+                    automation_id: a.id,
+                    status: "pending",
+                    page: pagesByAutomation[a.id] ?? 1,
+                    page_size: 10,
+                });
+                const filtered = filterHiddenResults(res, hiddenIds);
+                if (filtered) entries[a.id] = filtered;
+            }
+            setResultsByAutomation(entries);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [hiddenResultIds, pagesByAutomation]);
 
     useEffect(() => {
         loadAutomationsAndResults();
     }, [loadAutomationsAndResults]);
 
-    async function loadAutomationResults(automationId: string, page: number) {
-        setLoadingAutomationIds((prev) => new Set(prev).add(automationId));
-        try {
-            let data = await api.listResults({
-                status: "pending",
-                automation_id: automationId,
-                page,
-                page_size: 15,
-            });
-
-            if (data.total_pages > 0 && page > data.total_pages) {
-                data = await api.listResults({
-                    status: "pending",
-                    automation_id: automationId,
-                    page: data.total_pages,
-                    page_size: 15,
-                });
-                setPagesByAutomation((prev) => ({ ...prev, [automationId]: data.total_pages }));
-            }
-
-            setResultsByAutomation((prev) => ({ ...prev, [automationId]: data }));
-        } finally {
-            setLoadingAutomationIds((prev) => {
-                const next = new Set(prev);
-                next.delete(automationId);
+    async function loadAutomationResults(
+        automationId: string,
+        page: number,
+        hiddenIdsOverride?: Set<string>
+    ) {
+        const hiddenIds = hiddenIdsOverride ?? hiddenResultIds;
+        const res = await api.listResults({
+            automation_id: automationId,
+            status: "pending",
+            page,
+            page_size: 10,
+        });
+        setResultsByAutomation((prev) => {
+            const filtered = filterHiddenResults(res, hiddenIds);
+            if (!filtered) {
+                const next = { ...prev };
+                delete next[automationId];
                 return next;
-            });
-        }
+            }
+            return { ...prev, [automationId]: filtered };
+        });
     }
 
-    async function changeAutomationPage(automationId: string, nextPage: number) {
-        setPagesByAutomation((prev) => ({ ...prev, [automationId]: nextPage }));
-        await loadAutomationResults(automationId, nextPage);
-    }
-
-    async function handleAction(id: string, automationId: string, action: "saved" | "discarded") {
+    async function handleAction(
+        id: string,
+        automationId: string,
+        action: "saved" | "discarded"
+    ) {
         setActioning(id);
         try {
             await api.updateResultStatus(id, action);
@@ -117,9 +170,54 @@ export default function InboxPage() {
                 next.delete(id);
                 return next;
             });
-            await loadAutomationResults(automationId, pagesByAutomation[automationId] ?? 1);
+            removeResultsFromState([id]);
+            const hiddenIdsForRefresh = new Set(hiddenResultIds);
+            hiddenIdsForRefresh.add(id);
+            toast.success(action === "saved" ? "Edital salvo!" : "Edital descartado");
+            await loadAutomationResults(
+                automationId,
+                pagesByAutomation[automationId] ?? 1,
+                hiddenIdsForRefresh
+            );
+            router.refresh();
+        } catch {
+            toast.error("Falha ao processar ação. Tente novamente.");
         } finally {
             setActioning(null);
+        }
+    }
+
+    function requestDiscard(
+        id: string,
+        automationId: string,
+        objeto: string | null
+    ) {
+        setDiscardTarget({ id, automationId, objeto });
+    }
+
+    async function confirmDiscard() {
+        if (!discardTarget) return;
+
+        const { id } = discardTarget;
+        setActioning(id);
+        try {
+            await api.updateResultStatus(id, "discarded");
+            setSelectedIds((prev) => {
+                const next = new Set(prev);
+                next.delete(id);
+                return next;
+            });
+            removeResultsFromState([id]);
+            const hiddenIdsForRefresh = new Set(hiddenResultIds);
+            hiddenIdsForRefresh.add(id);
+            toast.success("Edital descartado");
+            await loadAutomationsAndResults(hiddenIdsForRefresh);
+            router.refresh();
+        } catch {
+            toast.error("Falha ao descartar edital. Tente novamente.");
+        } finally {
+            setActioning(null);
+            setDiscardTarget(null);
         }
     }
 
@@ -128,11 +226,34 @@ export default function InboxPage() {
         setActioning("batch");
         try {
             await api.batchAction(Array.from(selectedIds), action);
+            const count = selectedIds.size;
+            const idsToUpdate = Array.from(selectedIds);
             setSelectedIds(new Set());
-            await loadAutomationsAndResults();
+            removeResultsFromState(idsToUpdate);
+            const hiddenIdsForRefresh = new Set(hiddenResultIds);
+            idsToUpdate.forEach((id) => hiddenIdsForRefresh.add(id));
+            toast.success(
+                action === "saved"
+                    ? `${count} edital(is) salvo(s)!`
+                    : `${count} edital(is) descartado(s)`
+            );
+            await loadAutomationsAndResults(hiddenIdsForRefresh);
+            router.refresh();
+        } catch {
+            toast.error("Falha ao processar ação em lote.");
         } finally {
             setActioning(null);
         }
+    }
+
+    function requestBatchDiscard() {
+        if (selectedIds.size === 0) return;
+        setBatchDiscardConfirmOpen(true);
+    }
+
+    async function confirmBatchDiscard() {
+        setBatchDiscardConfirmOpen(false);
+        await handleBatchAction("discarded");
     }
 
     function toggleSelect(id: string) {
@@ -144,65 +265,50 @@ export default function InboxPage() {
         });
     }
 
-    const visibleResults = automations.flatMap((auto) => {
-        if (collapsedAutomationIds.has(auto.id)) return [];
-        return resultsByAutomation[auto.id]?.data || [];
-    });
-    const totalPending = Object.values(resultsByAutomation).reduce((sum, group) => sum + group.total, 0);
-    const hasVisibleResults = visibleResults.length > 0;
-    const allVisibleSelected = hasVisibleResults && visibleResults.every((r) => selectedIds.has(r.id));
+    const automationsWithResults = automations.filter(
+        (a) => resultsByAutomation[a.id]
+    );
+    const totalPending = Object.values(resultsByAutomation).reduce(
+        (sum, r) => sum + r.total,
+        0
+    );
 
-    function toggleSelectAllVisible() {
-        if (!hasVisibleResults) return;
-        setSelectedIds((prev) => {
-            const next = new Set(prev);
-            if (allVisibleSelected) {
-                visibleResults.forEach((r) => next.delete(r.id));
-            } else {
-                visibleResults.forEach((r) => next.add(r.id));
-            }
-            return next;
-        });
-    }
-
-    function toggleSelectAutomation(automationId: string) {
-        const groupResults = resultsByAutomation[automationId]?.data || [];
-        if (groupResults.length === 0) return;
-        const allSelectedInGroup = groupResults.every((r) => selectedIds.has(r.id));
-
-        setSelectedIds((prev) => {
-            const next = new Set(prev);
-            if (allSelectedInGroup) {
-                groupResults.forEach((r) => next.delete(r.id));
-            } else {
-                groupResults.forEach((r) => next.add(r.id));
-            }
-            return next;
-        });
-    }
-
-    function toggleCollapseAutomation(automationId: string) {
-        setCollapsedAutomationIds((prev) => {
-            const next = new Set(prev);
-            if (next.has(automationId)) next.delete(automationId);
-            else next.add(automationId);
-            return next;
-        });
+    if (loading) {
+        return (
+            <div className="max-w-5xl mx-auto">
+                <div className="mb-8">
+                    <div className="skeleton" style={{ height: 28, width: 120, marginBottom: 8 }} />
+                    <div className="skeleton skeleton-text short" />
+                </div>
+                <SkeletonList count={5} />
+            </div>
+        );
     }
 
     return (
-        <div className="max-w-5xl mx-auto animate-in">
-            <div className="flex items-center justify-between mb-8">
+        <div className="max-w-5xl mx-auto">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8 animate-in">
                 <div>
-                    <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--color-text-primary)" }}>Inbox</h1>
+                    <h1
+                        className="text-2xl font-extrabold mb-1"
+                        style={{ color: "var(--color-text-primary)" }}
+                    >
+                        Inbox
+                    </h1>
                     <p style={{ color: "var(--color-text-secondary)" }}>
-                        {totalPending} edital(is) pendente(s), separados por automação
+                        {totalPending} edital(is) pendente(s) de revisão
                     </p>
                 </div>
-
                 {selectedIds.size > 0 && (
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm mr-2" style={{ color: "var(--color-text-secondary)" }}>
+                    <div className="flex items-center gap-3 animate-in-scale">
+                        <span
+                            className="text-sm font-medium px-3 py-1 rounded-full"
+                            style={{
+                                background: "var(--color-primary-subtle)",
+                                color: "var(--color-primary)",
+                            }}
+                        >
                             {selectedIds.size} selecionado(s)
                         </span>
                         <button
@@ -210,263 +316,349 @@ export default function InboxPage() {
                             onClick={() => handleBatchAction("saved")}
                             disabled={actioning === "batch"}
                         >
-                            <Bookmark className="w-3.5 h-3.5" /> Salvar
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Salvar
                         </button>
                         <button
                             className="btn-danger"
-                            onClick={() => handleBatchAction("discarded")}
+                            onClick={requestBatchDiscard}
                             disabled={actioning === "batch"}
                         >
-                            <X className="w-3.5 h-3.5" /> Descartar
+                            <XCircle className="w-3.5 h-3.5" /> Descartar
                         </button>
+                        {actioning === "batch" && (
+                            <Loader2
+                                className="w-4 h-4 animate-spin"
+                                style={{ color: "var(--color-primary)" }}
+                            />
+                        )}
                     </div>
                 )}
             </div>
 
-            {loading ? (
-                <div className="flex items-center justify-center h-64">
-                    <Loader2 className="w-8 h-8 animate-spin" style={{ color: "var(--color-primary)" }} />
-                </div>
-            ) : totalPending === 0 ? (
-                <div className="card text-center py-16">
-                    <Inbox className="w-16 h-16 mx-auto mb-4" style={{ color: "var(--color-text-muted)" }} />
-                    <h2 className="text-xl font-semibold mb-2" style={{ color: "var(--color-text-primary)" }}>Inbox vazio</h2>
+            {/* Empty state */}
+            {automationsWithResults.length === 0 ? (
+                <div className="card text-center py-16 animate-in-scale">
+                    <div
+                        className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
+                        style={{ background: "var(--color-primary-subtle)" }}
+                    >
+                        <Inbox className="w-8 h-8" style={{ color: "var(--color-text-muted)" }} />
+                    </div>
+                    <h2
+                        className="text-xl font-semibold mb-2"
+                        style={{ color: "var(--color-text-primary)" }}
+                    >
+                        Inbox vazio
+                    </h2>
                     <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                        Todos os editais foram revisados. Novos resultados aparecerão aqui automaticamente.
+                        Nenhum edital pendente. Seus resultados aparecerão aqui.
                     </p>
                 </div>
             ) : (
-                <>
-                    <div className="flex items-center gap-3 mb-4 px-1">
-                        <button
-                            onClick={toggleSelectAllVisible}
-                            className="flex items-center gap-2 text-xs"
-                            style={{ color: "var(--color-text-muted)" }}
-                        >
-                            {allVisibleSelected ? (
-                                <CheckSquare className="w-4 h-4" style={{ color: "var(--color-primary)" }} />
-                            ) : (
-                                <Square className="w-4 h-4" />
-                            )}
-                            Selecionar todos da tela
-                        </button>
-                    </div>
+                <div className="space-y-8">
+                    {automationsWithResults.map((auto) => {
+                        const results = resultsByAutomation[auto.id];
+                        if (!results) return null;
+                        const currentPage = pagesByAutomation[auto.id] ?? 1;
 
-                    <div className="space-y-6">
-                        {automations.map((auto) => {
-                            const group = resultsByAutomation[auto.id];
-                            if (!group || group.total === 0) return null;
-
-                            const groupResults = group.data;
-                            const selectedInGroup = groupResults.filter((r) => selectedIds.has(r.id)).length;
-                            const allSelectedInGroup =
-                                groupResults.length > 0 && selectedInGroup === groupResults.length;
-                            const isGroupLoading = loadingAutomationIds.has(auto.id);
-                            const isCollapsed = collapsedAutomationIds.has(auto.id);
-
-                            return (
-                                <section key={auto.id} className="card">
-                                    <div className="flex items-center justify-between mb-4">
-                                        <div className="flex items-center gap-3 min-w-0">
-                                            <div
-                                                className="w-9 h-9 rounded-lg flex items-center justify-center"
-                                                style={{ background: "rgba(99,102,241,0.12)" }}
-                                            >
-                                                <Bot className="w-4.5 h-4.5" style={{ color: "var(--color-primary)" }} />
-                                            </div>
-                                            <div className="min-w-0">
-                                                <h2
-                                                    className="text-base font-semibold truncate"
-                                                    style={{ color: "var(--color-text-primary)" }}
-                                                >
-                                                    {auto.name}
-                                                </h2>
-                                                <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                                                    {group.total} pendente(s)
-                                                </p>
-                                            </div>
-                                        </div>
-
-                                        <div className="flex items-center gap-3">
-                                            <button
-                                                onClick={() => toggleSelectAutomation(auto.id)}
-                                                className="flex items-center gap-2 text-xs"
-                                                style={{ color: "var(--color-text-muted)" }}
-                                            >
-                                                {allSelectedInGroup ? (
-                                                    <CheckSquare className="w-4 h-4" style={{ color: "var(--color-primary)" }} />
-                                                ) : (
-                                                    <Square className="w-4 h-4" />
-                                                )}
-                                                Selecionar automação
-                                            </button>
-                                            <button
-                                                className="btn-ghost !p-2"
-                                                onClick={() => toggleCollapseAutomation(auto.id)}
-                                                title={isCollapsed ? "Expandir bloco" : "Recolher bloco"}
-                                            >
-                                                {isCollapsed ? (
-                                                    <ChevronDown className="w-4 h-4" />
-                                                ) : (
-                                                    <ChevronUp className="w-4 h-4" />
-                                                )}
-                                            </button>
-                                            {isGroupLoading && (
-                                                <Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--color-primary)" }} />
-                                            )}
-                                        </div>
+                        return (
+                            <div key={auto.id} className="animate-in-up">
+                                {/* Section header */}
+                                <div className="flex items-center gap-3 mb-4">
+                                    <div
+                                        className="w-8 h-8 rounded-lg flex items-center justify-center"
+                                        style={{ background: "var(--color-primary-subtle)" }}
+                                    >
+                                        <Bot className="w-4 h-4" style={{ color: "var(--color-primary)" }} />
                                     </div>
+                                    <h2
+                                        className="text-sm font-semibold flex-1"
+                                        style={{ color: "var(--color-text-primary)" }}
+                                    >
+                                        {auto.name}
+                                    </h2>
+                                    <span
+                                        className="text-xs font-bold px-2 py-0.5 rounded-full"
+                                        style={{
+                                            background: "var(--color-warning)",
+                                            color: "white",
+                                        }}
+                                    >
+                                        {results.total}
+                                    </span>
+                                </div>
 
-                                    {!isCollapsed && (
-                                        <>
-                                            <div className="space-y-3">
-                                        {groupResults.map((result, i) => (
-                                            <div
-                                                key={result.id}
-                                                className="card flex gap-4 animate-in"
-                                                style={{
-                                                    animationDelay: `${i * 30}ms`,
-                                                    borderLeftWidth: 3,
-                                                    borderLeftColor: !result.is_read ? "var(--color-primary)" : "transparent",
-                                                }}
-                                            >
-                                                <button onClick={() => toggleSelect(result.id)} className="flex-shrink-0 mt-1">
-                                                    {selectedIds.has(result.id) ? (
-                                                        <CheckSquare className="w-5 h-5" style={{ color: "var(--color-primary)" }} />
-                                                    ) : (
-                                                        <Square className="w-5 h-5" style={{ color: "var(--color-text-muted)" }} />
-                                                    )}
-                                                </button>
+                                {/* Results */}
+                                <div className="space-y-3">
+                                    {results.data.map((result, ri) => (
+                                        <ResultCard
+                                            key={result.id}
+                                            result={result}
+                                            index={ri}
+                                            automationId={auto.id}
+                                            selected={selectedIds.has(result.id)}
+                                            onToggle={toggleSelect}
+                                            onAction={handleAction}
+                                            onRequestDiscard={requestDiscard}
+                                            actioning={actioning}
+                                            onNavigate={() => router.push(`/inbox/${result.id}`)}
+                                        />
+                                    ))}
+                                </div>
 
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="flex items-start justify-between gap-4">
-                                                        <div className="min-w-0 flex-1">
-                                                            <h3
-                                                                className="text-sm font-semibold mb-1 leading-snug cursor-pointer hover:text-purple-400 transition-colors"
-                                                                style={{ color: "var(--color-text-primary)" }}
-                                                                onClick={() => router.push(`/inbox/${result.id}`)}
-                                                            >
-                                                                {result.objeto_compra || "Sem descrição"}
-                                                            </h3>
-                                                            <div className="flex flex-wrap items-center gap-3 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                                                                <span className="inline-flex items-center gap-1">
-                                                                    <Building2 className="w-3 h-3" />
-                                                                    {result.orgao_nome || result.cnpj_orgao}
-                                                                </span>
-                                                                {result.uf && (
-                                                                    <span className="inline-flex items-center gap-1">
-                                                                        <MapPin className="w-3 h-3" />
-                                                                        {result.municipio ? `${result.municipio}/${result.uf}` : result.uf}
-                                                                    </span>
-                                                                )}
-                                                                {result.modalidade_nome && (
-                                                                    <span className="inline-flex items-center gap-1">
-                                                                        <FileText className="w-3 h-3" />
-                                                                        {result.modalidade_nome}
-                                                                    </span>
-                                                                )}
-                                                            </div>
-
-                                                            <div className="flex flex-wrap items-center gap-4 mt-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                                                                {result.valor_total_estimado != null && (
-                                                                    <span className="inline-flex items-center gap-1 font-medium" style={{ color: "var(--color-success)" }}>
-                                                                        <DollarSign className="w-3 h-3" />
-                                                                        {formatCurrency(result.valor_total_estimado)}
-                                                                    </span>
-                                                                )}
-                                                                {result.data_publicacao && (
-                                                                    <span className="inline-flex items-center gap-1">
-                                                                        <Calendar className="w-3 h-3" />
-                                                                        Publicado: {formatDate(result.data_publicacao)}
-                                                                    </span>
-                                                                )}
-                                                                {result.data_abertura_proposta && (
-                                                                    <span className="inline-flex items-center gap-1">
-                                                                        <Calendar className="w-3 h-3" />
-                                                                        Abertura: {formatDateTime(result.data_abertura_proposta)}
-                                                                    </span>
-                                                                )}
-                                                                <span>
-                                                                    Encontrado {timeAgo(result.found_at)} atrás
-                                                                </span>
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                                                            {result.link_sistema_origem && (
-                                                                <a
-                                                                    href={result.link_sistema_origem}
-                                                                    target="_blank"
-                                                                    rel="noopener noreferrer"
-                                                                    className="btn-ghost !p-2"
-                                                                    title="Abrir no PNCP"
-                                                                >
-                                                                    <ExternalLink className="w-4 h-4" />
-                                                                </a>
-                                                            )}
-                                                            <button
-                                                                className="btn-ghost !py-1.5 !px-3"
-                                                                onClick={() => router.push(`/inbox/${result.id}`)}
-                                                                title="Ver detalhes"
-                                                            >
-                                                                <ArrowRight className="w-3.5 h-3.5" />
-                                                            </button>
-                                                            <button
-                                                                className="btn-success !py-1.5 !px-3"
-                                                                onClick={() => handleAction(result.id, result.automation_id, "saved")}
-                                                                disabled={actioning === result.id}
-                                                                title="Salvar"
-                                                            >
-                                                                {actioning === result.id ? (
-                                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                                ) : (
-                                                                    <Bookmark className="w-3.5 h-3.5" />
-                                                                )}
-                                                            </button>
-                                                            <button
-                                                                className="btn-ghost !py-1.5 !px-3"
-                                                                onClick={() => handleAction(result.id, result.automation_id, "discarded")}
-                                                                disabled={actioning === result.id}
-                                                                title="Descartar"
-                                                            >
-                                                                <X className="w-3.5 h-3.5" />
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        ))}
-                                            </div>
-
-                                            {group.total_pages > 1 && (
-                                                <div className="flex items-center justify-center gap-4 mt-6">
-                                                    <button
-                                                        className="btn-ghost"
-                                                        onClick={() => changeAutomationPage(auto.id, Math.max(1, group.page - 1))}
-                                                        disabled={group.page === 1 || isGroupLoading}
-                                                    >
-                                                        <ChevronLeft className="w-4 h-4" /> Anterior
-                                                    </button>
-                                                    <span className="text-sm" style={{ color: "var(--color-text-secondary)" }}>
-                                                        Página {group.page} de {group.total_pages}
-                                                    </span>
-                                                    <button
-                                                        className="btn-ghost"
-                                                        onClick={() => changeAutomationPage(auto.id, Math.min(group.total_pages, group.page + 1))}
-                                                        disabled={group.page >= group.total_pages || isGroupLoading}
-                                                    >
-                                                        Próxima <ChevronRight className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </>
-                                    )}
-                                </section>
-                            );
-                        })}
-                    </div>
-                </>
+                                {/* Pagination */}
+                                {results.total_pages > 1 && (
+                                    <div className="flex items-center justify-center gap-4 mt-4">
+                                        <button
+                                            className="btn-ghost"
+                                            onClick={() => {
+                                                const newPage = Math.max(1, currentPage - 1);
+                                                setPagesByAutomation((p) => ({
+                                                    ...p,
+                                                    [auto.id]: newPage,
+                                                }));
+                                                loadAutomationResults(auto.id, newPage);
+                                            }}
+                                            disabled={currentPage === 1}
+                                        >
+                                            <ChevronLeft className="w-4 h-4" /> Anterior
+                                        </button>
+                                        <span
+                                            className="text-sm"
+                                            style={{ color: "var(--color-text-secondary)" }}
+                                        >
+                                            {currentPage} de {results.total_pages}
+                                        </span>
+                                        <button
+                                            className="btn-ghost"
+                                            onClick={() => {
+                                                const newPage = Math.min(
+                                                    results.total_pages,
+                                                    currentPage + 1
+                                                );
+                                                setPagesByAutomation((p) => ({
+                                                    ...p,
+                                                    [auto.id]: newPage,
+                                                }));
+                                                loadAutomationResults(auto.id, newPage);
+                                            }}
+                                            disabled={currentPage >= results.total_pages}
+                                        >
+                                            Próxima <ChevronRight className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
             )}
+
+            <ConfirmModal
+                isOpen={Boolean(discardTarget)}
+                title="Confirmar exclusão"
+                message={
+                    discardTarget?.objeto
+                        ? `Deseja realmente descartar este edital?\n\n"${discardTarget.objeto}"`
+                        : "Deseja realmente descartar este edital?"
+                }
+                confirmLabel="Sim, descartar"
+                cancelLabel="Cancelar"
+                variant="danger"
+                isLoading={actioning === discardTarget?.id}
+                onCancel={() => setDiscardTarget(null)}
+                onConfirm={confirmDiscard}
+            />
+
+            <ConfirmModal
+                isOpen={batchDiscardConfirmOpen}
+                title="Confirmar exclusão em lote"
+                message={`Deseja realmente descartar ${selectedIds.size} edital(is) selecionado(s)?`}
+                confirmLabel="Sim, descartar todos"
+                cancelLabel="Cancelar"
+                variant="danger"
+                isLoading={actioning === "batch"}
+                onCancel={() => setBatchDiscardConfirmOpen(false)}
+                onConfirm={confirmBatchDiscard}
+            />
+        </div>
+    );
+}
+
+function ResultCard({
+    result,
+    index,
+    automationId,
+    selected,
+    onToggle,
+    onAction,
+    onRequestDiscard,
+    actioning,
+    onNavigate,
+}: {
+    result: SearchResult;
+    index: number;
+    automationId: string;
+    selected: boolean;
+    onToggle: (id: string) => void;
+    onAction: (id: string, automationId: string, action: "saved" | "discarded") => void;
+    onRequestDiscard: (id: string, automationId: string, objeto: string | null) => void;
+    actioning: string | null;
+    onNavigate: () => void;
+}) {
+    const isActioning = actioning === result.id;
+    const matchScopeLabel = getKeywordScopeLabel(result.keyword_match_scope);
+    const matchEvidenceSummary = summarizeKeywordEvidence(result.keyword_match_evidence);
+
+    return (
+        <div
+            className={`card card-interactive !p-4 transition-all duration-200 stagger-${Math.min(index + 1, 10)} animate-in`}
+            style={{
+                opacity: 0,
+                borderColor: selected ? "var(--color-primary)" : undefined,
+                boxShadow: selected
+                    ? "0 0 0 2px var(--color-primary-glow)"
+                    : undefined,
+            }}
+            onClick={onNavigate}
+        >
+            <div className="flex items-start gap-3">
+                {/* Checkbox */}
+                <button
+                    className="w-5 h-5 mt-0.5 rounded-md flex-shrink-0 flex items-center justify-center transition-all duration-200"
+                    style={{
+                        border: `2px solid ${selected ? "var(--color-primary)" : "var(--color-border)"
+                            }`,
+                        background: selected ? "var(--color-primary)" : "transparent",
+                    }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onToggle(result.id);
+                    }}
+                    aria-label={selected ? "Desmarcar edital" : "Selecionar edital"}
+                >
+                    {selected && <Check className="w-3 h-3 text-white" />}
+                </button>
+
+                {/* Content */}
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="badge badge-pending">Pendente</span>
+                        {result.situacao_compra_nome && (
+                            <span className="badge badge-saved">{result.situacao_compra_nome}</span>
+                        )}
+                        {matchScopeLabel && (
+                            <span className={`badge ${getKeywordScopeBadgeClass(result.keyword_match_scope)}`}>
+                                Match: {matchScopeLabel}
+                            </span>
+                        )}
+                    </div>
+                    <h3
+                        className="text-sm font-semibold mb-1 leading-snug transition-colors duration-200"
+                        style={{ color: "var(--color-text-primary)" }}
+                        onMouseEnter={(e) =>
+                            (e.currentTarget.style.color = "var(--color-primary)")
+                        }
+                        onMouseLeave={(e) =>
+                            (e.currentTarget.style.color = "var(--color-text-primary)")
+                        }
+                    >
+                        {result.objeto_compra || "Sem descrição"}
+                    </h3>
+                    <div
+                        className="flex flex-wrap items-center gap-3 text-xs"
+                        style={{ color: "var(--color-text-muted)" }}
+                    >
+                        <span className="inline-flex items-center gap-1">
+                            <Building2 className="w-3 h-3" />
+                            {result.orgao_nome || result.cnpj_orgao}
+                        </span>
+                        {result.uf && (
+                            <span className="inline-flex items-center gap-1">
+                                <MapPin className="w-3 h-3" />
+                                {result.municipio
+                                    ? `${result.municipio}/${result.uf}`
+                                    : result.uf}
+                            </span>
+                        )}
+                        {result.modalidade_nome && (
+                            <span className="inline-flex items-center gap-1">
+                                <FileText className="w-3 h-3" />
+                                {result.modalidade_nome}
+                            </span>
+                        )}
+                    </div>
+                    <div
+                        className="flex flex-wrap items-center gap-4 mt-2 text-xs"
+                        style={{ color: "var(--color-text-muted)" }}
+                    >
+                        {result.valor_total_estimado != null && (
+                            <span
+                                className="inline-flex items-center gap-1 font-medium"
+                                style={{ color: "var(--color-success)" }}
+                            >
+                                <DollarSign className="w-3 h-3" />
+                                {formatCurrency(result.valor_total_estimado)}
+                            </span>
+                        )}
+                        {result.data_publicacao && (
+                            <span className="inline-flex items-center gap-1">
+                                <Calendar className="w-3 h-3" />
+                                {formatDate(result.data_publicacao)}
+                            </span>
+                        )}
+                        {result.data_abertura_proposta && (
+                            <span>Abertura: {formatDateTime(result.data_abertura_proposta)}</span>
+                        )}
+                    </div>
+                    {matchEvidenceSummary && (
+                        <p className="mt-2 text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                            {matchEvidenceSummary}
+                        </p>
+                    )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                        className="btn-ghost !py-1.5 !px-3"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onNavigate();
+                        }}
+                        title="Ver detalhes"
+                        aria-label="Ver detalhes do edital"
+                    >
+                        <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                        className="btn-success !py-1.5"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onAction(result.id, automationId, "saved");
+                        }}
+                        disabled={isActioning}
+                        aria-label="Salvar edital"
+                    >
+                        {isActioning ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                        )}
+                    </button>
+                    <button
+                        className="btn-danger !py-1.5"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onRequestDiscard(result.id, automationId, result.objeto_compra);
+                        }}
+                        disabled={isActioning}
+                        aria-label="Descartar edital"
+                    >
+                        <XCircle className="w-3.5 h-3.5" />
+                    </button>
+                </div>
+            </div>
         </div>
     );
 }
