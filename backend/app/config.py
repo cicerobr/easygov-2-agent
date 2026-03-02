@@ -33,6 +33,10 @@ class Settings(BaseSettings):
 
     # Scheduler
     scheduler_enabled: bool = True
+    dispute_timeline_alerts_enabled: bool = True
+    dispute_timeline_alerts_interval_minutes: int = 15
+    dispute_timeline_alerts_opening_d0_enabled: bool = False
+    dispute_timeline_alerts_closing_h2_enabled: bool = False
 
     # PDF Analysis
     pdf_upload_dir: str = "uploads/pdfs"

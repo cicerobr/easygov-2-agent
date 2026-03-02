@@ -90,6 +90,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                             <button
                                 className="toast-close"
                                 onClick={() => removeToast(t.id)}
+                                onKeyDown={(event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                        event.preventDefault();
+                                        removeToast(t.id);
+                                    }
+                                }}
                                 aria-label="Fechar notificação"
                             >
                                 <X className="w-4 h-4" />

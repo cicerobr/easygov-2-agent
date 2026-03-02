@@ -1,18 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api, type Notification } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import {
     Bell,
     BellOff,
     CheckCheck,
-    Loader2,
     Mail,
     MessageSquare,
 } from "lucide-react";
 import { useToast } from "@/components/toast";
 import { SkeletonList } from "@/components/skeleton";
+import { PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
+import { InteractiveCard } from "@/components/interactive-card";
 
 const channelIcons: Record<string, typeof Bell> = {
     in_app: Bell,
@@ -22,6 +25,7 @@ const channelIcons: Record<string, typeof Bell> = {
 };
 
 export default function NotificacoesPage() {
+    const router = useRouter();
     const toast = useToast();
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [loading, setLoading] = useState(true);
@@ -43,67 +47,44 @@ export default function NotificacoesPage() {
 
     const unreadCount = notifications.filter((n) => !n.is_read).length;
 
+    function getNotificationResultId(notif: Notification): string | null {
+        const maybeId = notif.metadata_?.result_id;
+        return typeof maybeId === "string" && maybeId.length > 0 ? maybeId : null;
+    }
+
     return (
         <div className="max-w-3xl mx-auto">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8 animate-in">
-                <div>
-                    <h1
-                        className="text-2xl font-extrabold mb-1"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        Notificações
-                    </h1>
-                    <p style={{ color: "var(--color-text-secondary)" }}>
-                        {unreadCount > 0
-                            ? `${unreadCount} notificação(ões) não lida(s)`
-                            : "Todas as notificações lidas"}
-                    </p>
-                </div>
-                {unreadCount > 0 && (
-                    <button className="btn-ghost" onClick={markAllRead}>
-                        <CheckCheck className="w-4 h-4" /> Marcar todas como lidas
-                    </button>
-                )}
-            </div>
+            <PageHeader
+                title="Notificações"
+                subtitle={
+                    unreadCount > 0
+                        ? `${unreadCount} notificação(ões) não lida(s)`
+                        : "Todas as notificações lidas"
+                }
+                actions={
+                    unreadCount > 0 ? (
+                        <button className="btn-ghost" onClick={markAllRead}>
+                            <CheckCheck className="w-4 h-4" /> Marcar todas como lidas
+                        </button>
+                    ) : undefined
+                }
+            />
 
             {loading ? (
                 <SkeletonList count={4} />
             ) : notifications.length === 0 ? (
-                <div className="card text-center py-16 animate-in-scale">
-                    <div
-                        className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                        style={{ background: "var(--color-primary-subtle)" }}
-                    >
-                        <BellOff className="w-8 h-8" style={{ color: "var(--color-text-muted)" }} />
-                    </div>
-                    <h2
-                        className="text-xl font-semibold mb-2"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        Sem notificações
-                    </h2>
-                    <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                        Você receberá notificações quando novas licitações forem
-                        encontradas.
-                    </p>
-                </div>
+                <EmptyState
+                    icon={BellOff}
+                    title="Sem notificações"
+                    description="Você receberá notificações quando novas licitações forem encontradas."
+                />
             ) : (
                 <div className="space-y-2">
                     {notifications.map((notif, i) => {
                         const Icon = channelIcons[notif.channel] || Bell;
-                        return (
-                            <div
-                                key={notif.id}
-                                className={`card !p-4 flex items-start gap-4 transition-all duration-200 hover:scale-[1.005] stagger-${Math.min(i + 1, 10)} animate-in`}
-                                style={{
-                                    animationFillMode: "both",
-                                    opacity: 0,
-                                    borderLeftWidth: 3,
-                                    borderLeftColor: !notif.is_read
-                                        ? "var(--color-primary)"
-                                        : "transparent",
-                                }}
-                            >
+                        const resultId = getNotificationResultId(notif);
+                        const content = (
+                            <>
                                 <div
                                     className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform duration-200 hover:scale-110"
                                     style={{
@@ -146,6 +127,43 @@ export default function NotificacoesPage() {
                                 >
                                     {timeAgo(notif.sent_at)}
                                 </span>
+                            </>
+                        );
+
+                        if (resultId) {
+                            return (
+                                <InteractiveCard
+                                    key={notif.id}
+                                    className={`!p-4 flex items-start gap-4 transition-all duration-200 hover:scale-[1.005] stagger-${Math.min(i + 1, 10)} animate-in`}
+                                    style={{
+                                        animationFillMode: "both",
+                                        opacity: 0,
+                                        borderLeftWidth: 3,
+                                        borderLeftColor: !notif.is_read
+                                            ? "var(--color-primary)"
+                                            : "transparent",
+                                    }}
+                                    onActivate={() => router.push(`/disputas/${resultId}`)}
+                                    ariaLabel={`Abrir detalhes da disputa ${notif.title}`}
+                                >
+                                    {content}
+                                </InteractiveCard>
+                            );
+                        }
+                        return (
+                            <div
+                                key={notif.id}
+                                className={`card !p-4 flex items-start gap-4 transition-all duration-200 hover:scale-[1.005] stagger-${Math.min(i + 1, 10)} animate-in`}
+                                style={{
+                                    animationFillMode: "both",
+                                    opacity: 0,
+                                    borderLeftWidth: 3,
+                                    borderLeftColor: !notif.is_read
+                                        ? "var(--color-primary)"
+                                        : "transparent",
+                                }}
+                            >
+                                {content}
                             </div>
                         );
                     })}

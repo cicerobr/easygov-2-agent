@@ -13,8 +13,11 @@ from sqlalchemy import select, and_
 from app.database import AsyncSessionLocal
 from app.models import SearchAutomation
 from app.agent.engine import run_automation
+from app.config import get_settings
+from app.services.dispute_timeline_alerts import check_and_send_dispute_timeline_alerts
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 scheduler = AsyncIOScheduler()
 
@@ -59,6 +62,22 @@ async def check_and_run_automations():
                 logger.error(f"Failed to run automation '{automation.name}': {e}")
 
 
+async def check_and_send_dispute_timeline_alerts_job():
+    """Generate and dispatch timeline alerts for disputes in progress."""
+    if not settings.dispute_timeline_alerts_enabled:
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            await check_and_send_dispute_timeline_alerts(
+                db,
+                send_opening_d0=settings.dispute_timeline_alerts_opening_d0_enabled,
+                send_closing_h2=settings.dispute_timeline_alerts_closing_h2_enabled,
+            )
+        except Exception as exc:
+            logger.error("Failed to process dispute timeline alerts: %s", exc)
+
+
 def start_scheduler():
     """Start the scheduler with a 1-minute polling interval."""
     scheduler.add_job(
@@ -68,8 +87,18 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        check_and_send_dispute_timeline_alerts_job,
+        trigger=IntervalTrigger(minutes=settings.dispute_timeline_alerts_interval_minutes),
+        id="dispute_timeline_alerts",
+        replace_existing=True,
+        max_instances=1,
+    )
     scheduler.start()
-    logger.info("Scheduler started — checking automations every minute")
+    logger.info(
+        "Scheduler started — automations every 1 minute, dispute alerts every %s minute(s)",
+        settings.dispute_timeline_alerts_interval_minutes,
+    )
 
 
 def stop_scheduler():

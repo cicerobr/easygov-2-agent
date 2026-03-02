@@ -42,7 +42,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="flex min-h-screen">
+      <body className="flex min-h-screen overflow-x-hidden">
         <ThemeProvider>
           <ToastProvider>
             <a href="#main-content" className="skip-link">
@@ -51,7 +51,7 @@ export default function RootLayout({
             <Sidebar />
             <main
               id="main-content"
-              className="flex-1 md:ml-[260px] p-4 md:p-8 pt-16 md:pt-8 overflow-y-auto"
+              className="flex-1 md:ml-[260px] px-3 sm:px-4 md:px-8 py-4 md:py-8 pt-[72px] md:pt-8 pb-24 md:pb-8 overflow-y-auto"
             >
               {children}
             </main>

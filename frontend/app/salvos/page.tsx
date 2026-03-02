@@ -22,6 +22,9 @@ import {
 import { useToast } from "@/components/toast";
 import { SkeletonList } from "@/components/skeleton";
 import { ConfirmModal } from "@/components/confirm-modal";
+import { InteractiveCard } from "@/components/interactive-card";
+import { PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
 import {
     getKeywordScopeBadgeClass,
     getKeywordScopeLabel,
@@ -41,6 +44,31 @@ export default function SalvosPage() {
     } | null>(null);
     const [discardingId, setDiscardingId] = useState<string | null>(null);
     const [disputingId, setDisputingId] = useState<string | null>(null);
+
+    const removeSavedResultFromState = useCallback((resultId: string) => {
+        setResults((prev) => {
+            if (!prev) return prev;
+            const filteredData = prev.data.filter((item) => item.id !== resultId);
+            const removedCount = prev.data.length - filteredData.length;
+            if (removedCount === 0) return prev;
+            const nextTotal = Math.max(0, prev.total - removedCount);
+            if (nextTotal <= 0 || filteredData.length === 0) {
+                return null;
+            }
+            return {
+                ...prev,
+                data: filteredData,
+                total: nextTotal,
+                total_pages: Math.max(1, Math.ceil(nextTotal / Math.max(1, prev.page_size))),
+            };
+        });
+        setOpportunityByResultId((prev) => {
+            if (!prev[resultId]) return prev;
+            const next = { ...prev };
+            delete next[resultId];
+            return next;
+        });
+    }, []);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -89,6 +117,7 @@ export default function SalvosPage() {
         setDiscardingId(id);
         try {
             await api.updateResultStatus(id, "discarded");
+            removeSavedResultFromState(id);
             toast.success("Edital removido dos salvos");
             await load();
         } catch {
@@ -103,6 +132,7 @@ export default function SalvosPage() {
         setDisputingId(id);
         try {
             await api.startDispute(id);
+            removeSavedResultFromState(id);
             toast.success("Edital enviado para Disputas");
             router.push("/disputas");
         } catch {
@@ -114,38 +144,19 @@ export default function SalvosPage() {
 
     return (
         <div className="max-w-5xl mx-auto">
-            <div className="mb-8 animate-in">
-                <h1
-                    className="text-2xl font-extrabold mb-1"
-                    style={{ color: "var(--color-text-primary)" }}
-                >
-                    Editais Salvos
-                </h1>
-                <p style={{ color: "var(--color-text-secondary)" }}>
-                    {results?.total ?? 0} edital(is) salvo(s)
-                </p>
-            </div>
+            <PageHeader
+                title="Editais Salvos"
+                subtitle={`${results?.total ?? 0} edital(is) salvo(s)`}
+            />
 
             {loading ? (
                 <SkeletonList count={4} />
             ) : results?.data.length === 0 ? (
-                <div className="card text-center py-16 animate-in-scale">
-                    <div
-                        className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                        style={{ background: "var(--color-primary-subtle)" }}
-                    >
-                        <Bookmark className="w-8 h-8" style={{ color: "var(--color-text-muted)" }} />
-                    </div>
-                    <h2
-                        className="text-xl font-semibold mb-2"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        Nenhum edital salvo
-                    </h2>
-                    <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                        Salve editais do seu inbox para acompanhá-los aqui.
-                    </p>
-                </div>
+                <EmptyState
+                    icon={Bookmark}
+                    title="Nenhum edital salvo"
+                    description="Salve editais do seu inbox para acompanhá-los aqui."
+                />
             ) : (
                 <>
                     <div className="space-y-3">
@@ -153,14 +164,15 @@ export default function SalvosPage() {
                             const matchScopeLabel = getKeywordScopeLabel(result.keyword_match_scope);
                             const matchEvidenceSummary = summarizeKeywordEvidence(result.keyword_match_evidence);
                             return (
-                            <div
+                            <InteractiveCard
                                 key={result.id}
                                 className={`card card-interactive !p-4 stagger-${Math.min(i + 1, 10)} animate-in`}
                                 style={{
                                     animationFillMode: "both",
                                     opacity: 0,
                                 }}
-                                onClick={() => router.push(`/salvos/${result.id}`)}
+                                onActivate={() => router.push(`/salvos/${result.id}`)}
+                                ariaLabel={`Abrir edital salvo ${result.objeto_compra || result.numero_controle_pncp}`}
                             >
                                 <div className="flex items-start justify-between gap-4">
                                     <div className="min-w-0 flex-1">
@@ -307,7 +319,7 @@ export default function SalvosPage() {
                                         </button>
                                     </div>
                                 </div>
-                            </div>
+                            </InteractiveCard>
                             );
                         })}
                     </div>

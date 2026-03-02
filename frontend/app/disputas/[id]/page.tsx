@@ -52,6 +52,7 @@ import {
 } from "@/lib/technical-requirements";
 import { ModalPortal } from "@/components/modal-portal";
 import { ConfirmModal } from "@/components/confirm-modal";
+import { StickyFooterActions } from "@/components/sticky-footer-actions";
 
 type MainTab = "edital" | "analise_financeira";
 type EditalTab = "geral" | "itens" | "documentos" | "detalhes_edital";
@@ -277,7 +278,7 @@ export default function DisputaDetailPage() {
                 status: next.status as SearchResultDetail["status"],
                 dispute_finished_at: next.dispute_finished_at,
             });
-            router.push(`/disputas?tab=${action === "won" ? "vencidos" : "perdidos"}`);
+            window.location.assign(`/disputas?tab=${action === "won" ? "vencidos" : "perdidos"}`);
         } catch (err) {
             console.error(err);
             setError("Não foi possível finalizar a disputa deste edital.");
@@ -487,7 +488,7 @@ export default function DisputaDetailPage() {
                 />
             </div>
 
-            <div className="flex items-center justify-end gap-2 mb-6">
+            <div className="hidden md:flex items-center justify-end gap-2 mb-6">
                 <button
                     onClick={() => setFinishConfirm("won")}
                     disabled={!isOpenDispute || finishing}
@@ -586,6 +587,27 @@ export default function DisputaDetailPage() {
                     onChange={setFeedback}
                     onSubmit={handleSubmitFeedback}
                 />
+            )}
+
+            {isOpenDispute && (
+                <StickyFooterActions>
+                    <button
+                        onClick={() => setFinishConfirm("won")}
+                        disabled={finishing}
+                        className="btn-success disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        <Trophy className="w-4 h-4" />
+                        Ganhei
+                    </button>
+                    <button
+                        onClick={() => setFinishConfirm("lost")}
+                        disabled={finishing}
+                        className="btn-danger disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        <UserX className="w-4 h-4" />
+                        Perdido
+                    </button>
+                </StickyFooterActions>
             )}
 
             <ConfirmModal
@@ -741,6 +763,7 @@ function DisputeFeedbackSection({
                             border: "1px solid var(--color-border)",
                             color: "var(--color-text-primary)",
                         }}
+                        aria-label="Motivo principal da disputa"
                         placeholder="Ex: preço acima do vencedor, prazo, exigência técnica..."
                     />
                 </label>
@@ -765,6 +788,7 @@ function DisputeFeedbackSection({
                             border: "1px solid var(--color-border)",
                             color: "var(--color-text-primary)",
                         }}
+                        aria-label="Diferença para o vencedor em reais"
                     />
                 </label>
             </div>
@@ -1665,7 +1689,7 @@ function FinancialTab({
                                         Custos totais: {formatCurrency(row.financial.custos_totais)}
                                     </p>
                                 </div>
-                                <div className="overflow-x-auto">
+                                <div className="overflow-x-auto hidden md:block">
                                     <table className="w-full text-sm">
                                         <thead>
                                             <tr style={{ borderBottom: "1px solid var(--color-border)" }}>
@@ -1694,6 +1718,37 @@ function FinancialTab({
                                             ))}
                                         </tbody>
                                     </table>
+                                </div>
+                                <div className="md:hidden space-y-2">
+                                    {row.financial.precos_sugeridos.map((scenario) => (
+                                        <div
+                                            key={scenario.margem_percentual}
+                                            className="rounded-lg p-3"
+                                            style={{
+                                                background: "var(--color-bg-card)",
+                                                border: "1px solid var(--color-border)",
+                                            }}
+                                        >
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                                                    Margem alvo
+                                                </span>
+                                                <span className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                                                    {scenario.margem_percentual.toFixed(0)}%
+                                                </span>
+                                            </div>
+                                            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>Preço de venda</p>
+                                            <p className="text-base font-semibold mb-2" style={{ color: "var(--color-success)" }}>
+                                                {formatCurrency(scenario.preco_venda)}
+                                            </p>
+                                            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                                                Imposto: {formatCurrency(scenario.imposto_estimado)}
+                                            </p>
+                                            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                                                Lucro líquido: {formatCurrency(scenario.lucro_liquido_estimado)}
+                                            </p>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
                         )}
@@ -1745,16 +1800,23 @@ function FinancialInputModal({
     return (
         <ModalPortal>
             <div
-                className="fixed inset-0 z-50 flex items-center justify-center"
+                className="fixed inset-0 z-50 flex items-end md:items-center justify-center"
                 style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-                onClick={(event) => {
-                    if (event.target === event.currentTarget && !saving) {
-                        onClose();
-                    }
-                }}
             >
+                <button
+                    type="button"
+                    className="absolute inset-0"
+                    aria-label="Fechar modal de análise financeira"
+                    onClick={!saving ? onClose : undefined}
+                    onKeyDown={(event) => {
+                        if ((event.key === "Enter" || event.key === " ") && !saving) {
+                            event.preventDefault();
+                            onClose();
+                        }
+                    }}
+                />
                 <div
-                    className="rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden"
+                    className="rounded-t-2xl md:rounded-2xl shadow-2xl w-full h-[100dvh] md:h-auto md:max-w-3xl md:mx-4 overflow-hidden flex flex-col"
                     style={{ background: "var(--color-bg-card)", border: "1px solid var(--color-border)" }}
                 >
                     <div className="flex items-center justify-between p-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
@@ -1776,7 +1838,7 @@ function FinancialInputModal({
                         </button>
                     </div>
 
-                    <div className="p-5">
+                    <div className="p-5 overflow-y-auto flex-1">
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                             <FinancialField
                                 label="Preço do fornecedor (R$)"
@@ -1827,7 +1889,7 @@ function FinancialInputModal({
                     </div>
 
                     <div
-                        className="flex items-center justify-end gap-2 p-5"
+                        className="flex items-center justify-end gap-2 p-5 sticky bottom-0"
                         style={{ borderTop: "1px solid var(--color-border)" }}
                     >
                         <button onClick={onClose} disabled={saving} className="btn-ghost !px-4 !py-2">
@@ -1842,7 +1904,7 @@ function FinancialInputModal({
                             ) : (
                                 <>
                                     <Save className="w-4 h-4" />
-                                    Salvar análise
+                                    Salvar e calcular
                                 </>
                             )}
                         </button>
@@ -1875,6 +1937,7 @@ function FinancialField({
                 step={isPercent ? 0.01 : 0.01}
                 value={Number.isFinite(value) ? value : 0}
                 onChange={(event) => onChange(event.target.value)}
+                aria-label={label}
                 className="w-full rounded-lg px-3 py-2 text-sm"
                 style={{
                     background: "var(--color-bg-secondary)",
@@ -1903,12 +1966,19 @@ function FinancialProgressModal({
             <div
                 className="fixed inset-0 z-50 flex items-center justify-center"
                 style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-                onClick={(event) => {
-                    if (event.target === event.currentTarget && state.status !== "running") {
-                        onClose();
-                    }
-                }}
             >
+                <button
+                    type="button"
+                    className="absolute inset-0"
+                    aria-label="Fechar progresso da análise financeira"
+                    onClick={state.status !== "running" ? onClose : undefined}
+                    onKeyDown={(event) => {
+                        if ((event.key === "Enter" || event.key === " ") && state.status !== "running") {
+                            event.preventDefault();
+                            onClose();
+                        }
+                    }}
+                />
                 <div
                     className="rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
                     style={{ background: "var(--color-bg-card)", border: "1px solid var(--color-border)" }}

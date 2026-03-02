@@ -1,11 +1,11 @@
 """
 API Routes — Disputas
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -15,6 +15,9 @@ from app.schemas import (
     DisputeFeedbackResponse,
     DisputeFinishRequest,
     DisputeFinishResponse,
+    DisputeHighlightItemResponse,
+    DisputeHighlightsResponse,
+    DisputeHighlightSummaryResponse,
     DisputeItemFinancialInput,
     DisputeItemFinancialResponse,
     DisputeItemFinancialRow,
@@ -143,6 +146,43 @@ def _item_dedupe_key(item: ResultItem) -> tuple[str, int | str] | None:
     return None
 
 
+def _to_utc_naive(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone().replace(tzinfo=None)
+
+
+def _is_invalid_window(opening: datetime | None, closing: datetime | None) -> bool:
+    return opening is not None and closing is not None and opening > closing
+
+
+def _is_open_now(opening: datetime | None, closing: datetime | None, now: datetime) -> bool:
+    if opening is None:
+        return False
+    if now < opening:
+        return False
+    if closing is None:
+        return True
+    return now < closing
+
+
+def _to_highlight_item(result: SearchResult) -> DisputeHighlightItemResponse:
+    return DisputeHighlightItemResponse(
+        id=result.id,
+        numero_controle_pncp=result.numero_controle_pncp,
+        objeto_compra=result.objeto_compra,
+        orgao_nome=result.orgao_nome,
+        data_abertura_proposta=result.data_abertura_proposta,
+        data_encerramento_proposta=result.data_encerramento_proposta,
+        codigo_unidade_compradora=result.codigo_unidade_compradora,
+        urgency_state=result.urgency_state,
+        time_to_open_seconds=result.time_to_open_seconds,
+        time_to_close_seconds=result.time_to_close_seconds,
+    )
+
+
 @router.get("", response_model=PaginatedResults)
 async def list_disputes(
     user_id: uuid.UUID = Depends(get_current_user_id),
@@ -159,13 +199,16 @@ async def list_disputes(
     ).scalar() or 0
 
     offset = (page - 1) * page_size
-    query = (
-        select(SearchResult)
-        .where(and_(*conditions))
-        .order_by(SearchResult.dispute_started_at.desc(), SearchResult.found_at.desc())
-        .offset(offset)
-        .limit(page_size)
-    )
+    query = select(SearchResult).where(and_(*conditions))
+    if tab == "em_disputa":
+        query = query.order_by(
+            SearchResult.data_abertura_proposta.asc().nulls_last(),
+            SearchResult.data_encerramento_proposta.asc().nulls_last(),
+            SearchResult.found_at.desc(),
+        )
+    else:
+        query = query.order_by(SearchResult.dispute_started_at.desc(), SearchResult.found_at.desc())
+    query = query.offset(offset).limit(page_size)
     results = (await db.execute(query)).scalars().all()
     total_pages = (total + page_size - 1) // page_size
 
@@ -202,6 +245,151 @@ async def get_dispute_stats(
         vencidos=vencidos,
         perdidos=perdidos,
         total=em_disputa + vencidos + perdidos,
+    )
+
+
+@router.get("/highlights", response_model=DisputeHighlightsResponse)
+async def get_dispute_highlights(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    tab: str = Query(default="em_disputa", pattern="^(em_disputa|vencidos|perdidos)$"),
+    limit: int = Query(default=5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+):
+    if tab != "em_disputa":
+        return DisputeHighlightsResponse(
+            summary=DisputeHighlightSummaryResponse(
+                upcoming_24h_count=0,
+                open_now_count=0,
+                closing_24h_count=0,
+                next_opening_at=None,
+            ),
+            upcoming=[],
+            open_now=[],
+            critical=[],
+        )
+
+    now = datetime.utcnow()
+    next_24h = now + timedelta(hours=24)
+    base_conditions = [SearchResult.user_id == user_id, SearchResult.status == "dispute_open"]
+    open_now_condition = and_(
+        SearchResult.data_abertura_proposta.is_not(None),
+        SearchResult.data_abertura_proposta <= now,
+        or_(
+            SearchResult.data_encerramento_proposta.is_(None),
+            SearchResult.data_encerramento_proposta > now,
+        ),
+    )
+
+    summary_row = (
+        await db.execute(
+            select(
+                func.count()
+                .filter(
+                    and_(
+                        SearchResult.data_abertura_proposta.is_not(None),
+                        SearchResult.data_abertura_proposta > now,
+                        SearchResult.data_abertura_proposta <= next_24h,
+                    )
+                )
+                .label("upcoming_24h_count"),
+                func.count().filter(open_now_condition).label("open_now_count"),
+                func.count()
+                .filter(
+                    and_(
+                        open_now_condition,
+                        SearchResult.data_encerramento_proposta.is_not(None),
+                        SearchResult.data_encerramento_proposta <= next_24h,
+                    )
+                )
+                .label("closing_24h_count"),
+                func.min(SearchResult.data_abertura_proposta)
+                .filter(SearchResult.data_abertura_proposta > now)
+                .label("next_opening_at"),
+            ).where(and_(*base_conditions))
+        )
+    ).one()
+
+    upcoming_results = (
+        await db.execute(
+            select(SearchResult)
+            .where(
+                and_(
+                    *base_conditions,
+                    SearchResult.data_abertura_proposta.is_not(None),
+                    SearchResult.data_abertura_proposta > now,
+                )
+            )
+            .order_by(SearchResult.data_abertura_proposta.asc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    open_now_results = (
+        await db.execute(
+            select(SearchResult)
+            .where(and_(*base_conditions, open_now_condition))
+            .order_by(SearchResult.data_encerramento_proposta.asc().nulls_last())
+            .limit(limit)
+        )
+    ).scalars().all()
+    critical_results = (
+        await db.execute(
+            select(SearchResult)
+            .where(
+                and_(
+                    *base_conditions,
+                    open_now_condition,
+                    SearchResult.data_encerramento_proposta.is_not(None),
+                    SearchResult.data_encerramento_proposta <= next_24h,
+                )
+            )
+            .order_by(SearchResult.data_encerramento_proposta.asc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    upcoming_items = [
+        _to_highlight_item(item)
+        for item in upcoming_results
+        if not _is_invalid_window(
+            _to_utc_naive(item.data_abertura_proposta),
+            _to_utc_naive(item.data_encerramento_proposta),
+        )
+    ]
+    open_now_items = [
+        _to_highlight_item(item)
+        for item in open_now_results
+        if _is_open_now(
+            _to_utc_naive(item.data_abertura_proposta),
+            _to_utc_naive(item.data_encerramento_proposta),
+            now,
+        )
+        and not _is_invalid_window(
+            _to_utc_naive(item.data_abertura_proposta),
+            _to_utc_naive(item.data_encerramento_proposta),
+        )
+    ]
+    critical_items = [
+        _to_highlight_item(item)
+        for item in critical_results
+        if item.data_encerramento_proposta is not None
+        and _to_utc_naive(item.data_encerramento_proposta) is not None
+        and (_to_utc_naive(item.data_encerramento_proposta) - now).total_seconds() <= 24 * 60 * 60
+        and not _is_invalid_window(
+            _to_utc_naive(item.data_abertura_proposta),
+            _to_utc_naive(item.data_encerramento_proposta),
+        )
+    ]
+
+    return DisputeHighlightsResponse(
+        summary=DisputeHighlightSummaryResponse(
+            upcoming_24h_count=summary_row.upcoming_24h_count or 0,
+            open_now_count=summary_row.open_now_count or 0,
+            closing_24h_count=summary_row.closing_24h_count or 0,
+            next_opening_at=summary_row.next_opening_at,
+        ),
+        upcoming=upcoming_items,
+        open_now=open_now_items,
+        critical=critical_items,
     )
 
 

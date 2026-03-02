@@ -17,6 +17,9 @@ import {
 import { api, EditalAnalysis, AnalysisStats } from "@/lib/api";
 import { ConfirmModal } from "@/components/confirm-modal";
 import { useToast } from "@/components/toast";
+import { InteractiveCard } from "@/components/interactive-card";
+import { EmptyState } from "@/components/empty-state";
+import { PageHeader } from "@/components/page-header";
 
 export default function AnalisesPage() {
     const router = useRouter();
@@ -31,6 +34,18 @@ export default function AnalisesPage() {
     const [totalPages, setTotalPages] = useState(1);
     const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
+
+    function triggerFilePicker() {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".pdf";
+        input.multiple = true;
+        input.onchange = (event) => {
+            const files = (event.target as HTMLInputElement).files;
+            if (files) handleFiles(files);
+        };
+        input.click();
+    }
 
     const loadData = useCallback(async () => {
         try {
@@ -88,8 +103,17 @@ export default function AnalisesPage() {
     const confirmDelete = async () => {
         if (!deleteConfirmId) return;
         setIsDeleting(true);
+        const targetId = deleteConfirmId;
         try {
-            await api.deleteAnalysis(deleteConfirmId);
+            await api.deleteAnalysis(targetId);
+            setAnalyses((prev) => prev.filter((analysis) => analysis.id !== targetId));
+            setStats((prev) => {
+                if (!prev) return prev;
+                return {
+                    ...prev,
+                    total: Math.max(0, prev.total - 1),
+                };
+            });
             setDeleteConfirmId(null);
             toast.success("Análise excluída com sucesso");
             await loadData();
@@ -161,32 +185,10 @@ export default function AnalisesPage() {
     return (
         <div className="max-w-5xl mx-auto">
             {/* Header */}
-            <div className="flex items-center justify-between mb-8 animate-in">
-                <div>
-                    <h1
-                        className="text-2xl font-extrabold flex items-center gap-3"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        <div
-                            className="w-10 h-10 rounded-xl flex items-center justify-center"
-                            style={{
-                                background:
-                                    "linear-gradient(135deg, var(--color-primary), var(--color-primary-hover))",
-                                boxShadow: "0 4px 12px var(--color-primary-glow)",
-                            }}
-                        >
-                            <FileSearch className="w-5 h-5 text-white" />
-                        </div>
-                        Análise de Editais
-                    </h1>
-                    <p
-                        className="text-sm mt-1"
-                        style={{ color: "var(--color-text-muted)" }}
-                    >
-                        Envie editais em PDF para análise inteligente com IA
-                    </p>
-                </div>
-            </div>
+            <PageHeader
+                title="Análise de Editais"
+                subtitle="Envie editais em PDF para análise inteligente com IA"
+            />
 
             {/* Stats */}
             {stats && (
@@ -231,20 +233,16 @@ export default function AnalisesPage() {
                 }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
-                onClick={() => {
-                    const input = document.createElement("input");
-                    input.type = "file";
-                    input.accept = ".pdf";
-                    input.multiple = true;
-                    input.onchange = (e) => {
-                        const files = (e.target as HTMLInputElement).files;
-                        if (files) handleFiles(files);
-                    };
-                    input.click();
-                }}
+                onClick={triggerFilePicker}
                 role="button"
                 aria-label="Clique ou arraste PDFs para enviar"
                 tabIndex={0}
+                onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        triggerFilePicker();
+                    }
+                }}
             >
                 {uploading ? (
                     <div className="flex flex-col items-center gap-3">
@@ -332,31 +330,20 @@ export default function AnalisesPage() {
                     />
                 </div>
             ) : analyses.length === 0 ? (
-                <div className="card text-center py-16 animate-in-scale">
-                    <div
-                        className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                        style={{ background: "var(--color-primary-subtle)" }}
-                    >
-                        <Bot className="w-8 h-8" style={{ color: "var(--color-text-muted)" }} />
-                    </div>
-                    <h3
-                        className="text-lg font-semibold mb-2"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        Nenhuma análise encontrada
-                    </h3>
-                    <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                        Envie um PDF de edital para começar a análise inteligente
-                    </p>
-                </div>
+                <EmptyState
+                    icon={Bot}
+                    title="Nenhuma análise encontrada"
+                    description="Envie um PDF de edital para começar a análise inteligente"
+                />
             ) : (
                 <div className="space-y-3">
                     {analyses.map((a, i) => (
-                        <div
+                        <InteractiveCard
                             key={a.id}
                             className={`card card-interactive !p-4 flex items-center gap-4 stagger-${Math.min(i + 1, 10)} animate-in`}
                             style={{ animationFillMode: "both", opacity: 0 }}
-                            onClick={() => router.push(`/analises/${a.id}`)}
+                            onActivate={() => router.push(`/analises/${a.id}`)}
+                            ariaLabel={`Abrir análise ${a.pdf_filename || a.id}`}
                         >
                             <div
                                 className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform duration-200 hover:scale-110"
@@ -435,7 +422,7 @@ export default function AnalisesPage() {
                                 className="w-4 h-4 flex-shrink-0"
                                 style={{ color: "var(--color-text-muted)" }}
                             />
-                        </div>
+                        </InteractiveCard>
                     ))}
                 </div>
             )}

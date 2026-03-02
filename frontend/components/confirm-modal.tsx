@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { ModalPortal } from "@/components/modal-portal";
 
 interface ConfirmModalProps {
@@ -27,6 +27,8 @@ export function ConfirmModal({
     variant = "danger",
     isLoading = false,
 }: ConfirmModalProps) {
+    const titleId = useId();
+
     useEffect(() => {
         if (isOpen) {
             document.body.style.overflow = "hidden";
@@ -67,12 +69,25 @@ export function ConfirmModal({
                 className="fixed inset-0 z-50 flex items-center justify-center p-4"
                 role="dialog"
                 aria-modal="true"
-                aria-labelledby="confirm-modal-title"
+                aria-labelledby={titleId}
             >
-                <div
+                <button
+                    type="button"
                     className="absolute inset-0 modal-overlay-enter"
-                    style={{ background: "var(--color-overlay)", backdropFilter: "blur(4px)" }}
+                    style={{
+                        background: "var(--color-overlay)",
+                        backdropFilter: "blur(4px)",
+                        border: "none",
+                        padding: 0,
+                    }}
                     onClick={isLoading ? undefined : onCancel}
+                    onKeyDown={(event) => {
+                        if ((event.key === "Enter" || event.key === " ") && !isLoading) {
+                            event.preventDefault();
+                            onCancel();
+                        }
+                    }}
+                    aria-label="Fechar confirmação"
                 />
                 <div
                     className="relative rounded-2xl shadow-2xl max-w-md w-full overflow-hidden modal-content-enter"
@@ -88,7 +103,7 @@ export function ConfirmModal({
                             </div>
                             <div>
                                 <h3
-                                    id="confirm-modal-title"
+                                    id={titleId}
                                     className="text-xl font-bold"
                                     style={{ color: "var(--color-text-primary)" }}
                                 >

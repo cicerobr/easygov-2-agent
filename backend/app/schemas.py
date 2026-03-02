@@ -161,6 +161,9 @@ class SearchResultResponse(BaseModel):
     acted_at: Optional[datetime]
     dispute_started_at: Optional[datetime]
     dispute_finished_at: Optional[datetime]
+    urgency_state: Optional[str] = None
+    time_to_open_seconds: Optional[int] = None
+    time_to_close_seconds: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -249,6 +252,9 @@ class SearchResultDetailResponse(BaseModel):
     acted_at: Optional[datetime]
     dispute_started_at: Optional[datetime]
     dispute_finished_at: Optional[datetime]
+    urgency_state: Optional[str] = None
+    time_to_open_seconds: Optional[int] = None
+    time_to_close_seconds: Optional[int] = None
 
     # Nested data
     items: list[ResultItemResponse]
@@ -266,6 +272,7 @@ class NotificationResponse(BaseModel):
     body: Optional[str]
     is_read: bool
     sent_at: datetime
+    metadata_: Optional[dict]
 
     model_config = {"from_attributes": True}
 
@@ -361,6 +368,35 @@ class DisputeStatsResponse(BaseModel):
     vencidos: int
     perdidos: int
     total: int
+
+
+class DisputeHighlightSummaryResponse(BaseModel):
+    upcoming_24h_count: int
+    open_now_count: int
+    closing_24h_count: int
+    next_opening_at: Optional[datetime]
+
+
+class DisputeHighlightItemResponse(BaseModel):
+    id: uuid.UUID
+    numero_controle_pncp: str
+    objeto_compra: Optional[str]
+    orgao_nome: Optional[str]
+    data_abertura_proposta: Optional[datetime]
+    data_encerramento_proposta: Optional[datetime]
+    codigo_unidade_compradora: Optional[str]
+    urgency_state: Optional[str]
+    time_to_open_seconds: Optional[int]
+    time_to_close_seconds: Optional[int]
+
+    model_config = {"from_attributes": True}
+
+
+class DisputeHighlightsResponse(BaseModel):
+    summary: DisputeHighlightSummaryResponse
+    upcoming: list[DisputeHighlightItemResponse]
+    open_now: list[DisputeHighlightItemResponse]
+    critical: list[DisputeHighlightItemResponse]
 
 
 class DisputeMarginSuggestion(BaseModel):

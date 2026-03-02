@@ -28,6 +28,9 @@ import {
 import { SkeletonList } from "@/components/skeleton";
 import { useToast } from "@/components/toast";
 import { ConfirmModal } from "@/components/confirm-modal";
+import { InteractiveCard } from "@/components/interactive-card";
+import { PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
 import {
     getKeywordScopeBadgeClass,
     getKeywordScopeLabel,
@@ -287,20 +290,11 @@ export default function InboxPage() {
 
     return (
         <div className="max-w-5xl mx-auto">
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8 animate-in">
-                <div>
-                    <h1
-                        className="text-2xl font-extrabold mb-1"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        Inbox
-                    </h1>
-                    <p style={{ color: "var(--color-text-secondary)" }}>
-                        {totalPending} edital(is) pendente(s) de revisão
-                    </p>
-                </div>
-                {selectedIds.size > 0 && (
+            <PageHeader
+                title="Inbox"
+                subtitle={`${totalPending} edital(is) pendente(s) de revisão`}
+                actions={
+                    selectedIds.size > 0 ? (
                     <div className="flex items-center gap-3 animate-in-scale">
                         <span
                             className="text-sm font-medium px-3 py-1 rounded-full"
@@ -332,28 +326,17 @@ export default function InboxPage() {
                             />
                         )}
                     </div>
-                )}
-            </div>
+                    ) : null
+                }
+            />
 
             {/* Empty state */}
             {automationsWithResults.length === 0 ? (
-                <div className="card text-center py-16 animate-in-scale">
-                    <div
-                        className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                        style={{ background: "var(--color-primary-subtle)" }}
-                    >
-                        <Inbox className="w-8 h-8" style={{ color: "var(--color-text-muted)" }} />
-                    </div>
-                    <h2
-                        className="text-xl font-semibold mb-2"
-                        style={{ color: "var(--color-text-primary)" }}
-                    >
-                        Inbox vazio
-                    </h2>
-                    <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-                        Nenhum edital pendente. Seus resultados aparecerão aqui.
-                    </p>
-                </div>
+                <EmptyState
+                    icon={Inbox}
+                    title="Inbox vazio"
+                    description="Nenhum edital pendente. Seus resultados aparecerão aqui."
+                />
             ) : (
                 <div className="space-y-8">
                     {automationsWithResults.map((auto) => {
@@ -511,7 +494,7 @@ function ResultCard({
     const matchEvidenceSummary = summarizeKeywordEvidence(result.keyword_match_evidence);
 
     return (
-        <div
+        <InteractiveCard
             className={`card card-interactive !p-4 transition-all duration-200 stagger-${Math.min(index + 1, 10)} animate-in`}
             style={{
                 opacity: 0,
@@ -520,7 +503,8 @@ function ResultCard({
                     ? "0 0 0 2px var(--color-primary-glow)"
                     : undefined,
             }}
-            onClick={onNavigate}
+            onActivate={onNavigate}
+            ariaLabel={`Abrir detalhes do edital ${result.objeto_compra || result.numero_controle_pncp}`}
         >
             <div className="flex items-start gap-3">
                 {/* Checkbox */}
@@ -659,6 +643,6 @@ function ResultCard({
                     </button>
                 </div>
             </div>
-        </div>
+        </InteractiveCard>
     );
 }

@@ -102,6 +102,9 @@ export interface SearchResult {
     acted_at: string | null;
     dispute_started_at: string | null;
     dispute_finished_at: string | null;
+    urgency_state?: DisputeUrgencyState | null;
+    time_to_open_seconds?: number | null;
+    time_to_close_seconds?: number | null;
 }
 
 export interface ResultItem {
@@ -202,6 +205,40 @@ export interface DisputeStats {
     total: number;
 }
 
+export type DisputeUrgencyState =
+    | "upcoming"
+    | "open"
+    | "closing_soon"
+    | "closed_window"
+    | "unknown_dates";
+
+export interface DisputeHighlightSummary {
+    upcoming_24h_count: number;
+    open_now_count: number;
+    closing_24h_count: number;
+    next_opening_at: string | null;
+}
+
+export interface DisputeHighlightItem {
+    id: string;
+    numero_controle_pncp: string;
+    objeto_compra: string | null;
+    orgao_nome: string | null;
+    data_abertura_proposta: string | null;
+    data_encerramento_proposta: string | null;
+    codigo_unidade_compradora: string | null;
+    urgency_state: DisputeUrgencyState | null;
+    time_to_open_seconds: number | null;
+    time_to_close_seconds: number | null;
+}
+
+export interface DisputeHighlightsResponse {
+    summary: DisputeHighlightSummary;
+    upcoming: DisputeHighlightItem[];
+    open_now: DisputeHighlightItem[];
+    critical: DisputeHighlightItem[];
+}
+
 export interface DisputeStartResponse {
     id: string;
     status: string;
@@ -221,6 +258,7 @@ export interface Notification {
     body: string | null;
     is_read: boolean;
     sent_at: string;
+    metadata_: Record<string, unknown> | null;
 }
 
 export interface AutomationRun {
@@ -437,6 +475,14 @@ export const api = {
     },
 
     getDisputeStats: () => apiFetch<DisputeStats>("/disputes/stats"),
+
+    getDisputeHighlights: (
+        tab: "em_disputa" | "vencidos" | "perdidos" = "em_disputa",
+        limit = 5
+    ) =>
+        apiFetch<DisputeHighlightsResponse>(
+            `/disputes/highlights?tab=${tab}&limit=${limit}`
+        ),
 
     startDispute: (resultId: string) =>
         apiFetch<DisputeStartResponse>(`/disputes/${resultId}/start`, {

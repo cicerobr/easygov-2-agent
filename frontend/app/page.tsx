@@ -17,6 +17,7 @@ import {
   Gauge,
 } from "lucide-react";
 import { SkeletonDashboard } from "@/components/skeleton";
+import { PageHeader } from "@/components/page-header";
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<ResultStats | null>(null);
@@ -41,17 +42,10 @@ export default function DashboardPage() {
   return (
     <div className="max-w-6xl mx-auto">
       {/* Header */}
-      <div className="mb-8 animate-in">
-        <h1
-          className="text-2xl font-extrabold mb-1"
-          style={{ color: "var(--color-text-primary)" }}
-        >
-          Dashboard
-        </h1>
-        <p style={{ color: "var(--color-text-secondary)" }}>
-          Visão geral do monitoramento de editais
-        </p>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        subtitle="Visão geral do monitoramento de editais"
+      />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

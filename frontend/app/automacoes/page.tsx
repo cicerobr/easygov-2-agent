@@ -23,6 +23,8 @@ import { ModalPortal } from "@/components/modal-portal";
 import { ConfirmModal } from "@/components/confirm-modal";
 import { SkeletonList } from "@/components/skeleton";
 import { useToast } from "@/components/toast";
+import { PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
 
 export default function AutomacoesPage() {
     const toast = useToast();
@@ -62,9 +64,19 @@ export default function AutomacoesPage() {
     async function confirmDelete() {
         if (!deleteConfirmId) return;
         setIsDeleting(true);
-        const name = automations.find((a) => a.id === deleteConfirmId)?.name;
+        const targetId = deleteConfirmId;
+        const name = automations.find((a) => a.id === targetId)?.name;
         try {
-            await api.deleteAutomation(deleteConfirmId);
+            await api.deleteAutomation(targetId);
+            setAutomations((prev) => prev.filter((a) => a.id !== targetId));
+            setRuns((prev) => {
+                const next = { ...prev };
+                delete next[targetId];
+                return next;
+            });
+            if (expandedId === targetId) {
+                setExpandedId(null);
+            }
             setDeleteConfirmId(null);
             toast.success(`"${name}" excluída com sucesso`);
             await loadAutomations();
@@ -132,45 +144,30 @@ export default function AutomacoesPage() {
         <>
             <div className="max-w-5xl mx-auto">
                 {/* Header */}
-                <div className="flex items-center justify-between mb-8 animate-in">
-                    <div>
-                        <h1
-                            className="text-2xl font-extrabold mb-1"
-                            style={{ color: "var(--color-text-primary)" }}
-                        >
-                            Automações
-                        </h1>
-                        <p style={{ color: "var(--color-text-secondary)" }}>
-                            Configure buscas automáticas no PNCP
-                        </p>
-                    </div>
-                    <button className="btn-primary" onClick={() => setShowForm(!showForm)}>
-                        {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-                        {showForm ? "Cancelar" : "Nova Automação"}
-                    </button>
-                </div>
+                <PageHeader
+                    title="Automações"
+                    subtitle="Configure buscas automáticas no PNCP"
+                    actions={
+                        <button className="btn-primary" onClick={() => setShowForm(!showForm)}>
+                            {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                            {showForm ? "Cancelar" : "Nova Automação"}
+                        </button>
+                    }
+                />
 
                 {/* Automations List */}
                 {automations.length === 0 && !showForm ? (
-                    <div className="card text-center py-16 animate-in-scale">
-                        <div
-                            className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
-                            style={{ background: "var(--color-primary-subtle)" }}
-                        >
-                            <Bot className="w-8 h-8" style={{ color: "var(--color-text-muted)" }} />
+                    <div>
+                        <EmptyState
+                            icon={Bot}
+                            title="Nenhuma automação"
+                            description="Crie sua primeira automação para começar a monitorar editais"
+                        />
+                        <div className="flex justify-center mt-6">
+                            <button className="btn-primary" onClick={() => setShowForm(true)}>
+                                <Plus className="w-4 h-4" /> Criar Automação
+                            </button>
                         </div>
-                        <h2
-                            className="text-xl font-semibold mb-2"
-                            style={{ color: "var(--color-text-primary)" }}
-                        >
-                            Nenhuma automação
-                        </h2>
-                        <p className="text-sm mb-6" style={{ color: "var(--color-text-muted)" }}>
-                            Crie sua primeira automação para começar a monitorar editais
-                        </p>
-                        <button className="btn-primary" onClick={() => setShowForm(true)}>
-                            <Plus className="w-4 h-4" /> Criar Automação
-                        </button>
                     </div>
                 ) : (
                     <div className="space-y-4">
@@ -491,13 +488,16 @@ function CreateForm({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
                     <label
+                        htmlFor="automation-name"
                         className="block text-xs font-medium mb-2"
                         style={{ color: "var(--color-text-secondary)" }}
                     >
                         Nome da automação *
                     </label>
                     <input
+                        id="automation-name"
                         className="input"
+                        aria-label="Nome da automação"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         placeholder="Ex: Pregões de TI em São Paulo"
@@ -506,13 +506,16 @@ function CreateForm({
                 </div>
                 <div>
                     <label
+                        htmlFor="automation-search-type"
                         className="block text-xs font-medium mb-2"
                         style={{ color: "var(--color-text-secondary)" }}
                     >
                         Tipo de busca
                     </label>
                     <select
+                        id="automation-search-type"
                         className="input"
+                        aria-label="Tipo de busca"
                         value={searchType}
                         onChange={(e) => setSearchType(e.target.value)}
                     >
@@ -526,12 +529,19 @@ function CreateForm({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
                     <label
+                        htmlFor="automation-uf"
                         className="block text-xs font-medium mb-2"
                         style={{ color: "var(--color-text-secondary)" }}
                     >
                         Estado (UF)
                     </label>
-                    <select className="input" value={uf} onChange={(e) => setUf(e.target.value)}>
+                    <select
+                        id="automation-uf"
+                        className="input"
+                        aria-label="Estado UF"
+                        value={uf}
+                        onChange={(e) => setUf(e.target.value)}
+                    >
                         <option value="">Todo Brasil</option>
                         {UFS.map((u) => (
                             <option key={u} value={u}>
@@ -542,13 +552,16 @@ function CreateForm({
                 </div>
                 <div>
                     <label
+                        htmlFor="automation-interval-hours"
                         className="block text-xs font-medium mb-2"
                         style={{ color: "var(--color-text-secondary)" }}
                     >
                         Intervalo entre execuções
                     </label>
                     <select
+                        id="automation-interval-hours"
                         className="input"
+                        aria-label="Intervalo entre execuções em horas"
                         value={intervalHours}
                         onChange={(e) => setIntervalHours(Number(e.target.value))}
                     >
@@ -598,13 +611,16 @@ function CreateForm({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                 <div>
                     <label
+                        htmlFor="automation-keywords"
                         className="block text-xs font-medium mb-2"
                         style={{ color: "var(--color-text-secondary)" }}
                     >
                         Palavras-chave (separadas por vírgula)
                     </label>
                     <input
+                        id="automation-keywords"
                         className="input"
+                        aria-label="Palavras-chave da automação"
                         value={keywords}
                         onChange={(e) => setKeywords(e.target.value)}
                         placeholder="software, tecnologia, computador"
@@ -612,13 +628,16 @@ function CreateForm({
                 </div>
                 <div>
                     <label
+                        htmlFor="automation-keywords-exclude"
                         className="block text-xs font-medium mb-2"
                         style={{ color: "var(--color-text-secondary)" }}
                     >
                         Excluir palavras (separadas por vírgula)
                     </label>
                     <input
+                        id="automation-keywords-exclude"
                         className="input"
+                        aria-label="Palavras-chave excluídas da automação"
                         value={keywordsExclude}
                         onChange={(e) => setKeywordsExclude(e.target.value)}
                         placeholder="obras, construção"

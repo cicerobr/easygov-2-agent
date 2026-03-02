@@ -25,6 +25,7 @@ import { hasOpportunityTag } from "@/lib/analysis-tags";
 import { getKeywordScopeLabel } from "@/lib/keyword-evidence";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
 import { ConfirmModal } from "@/components/confirm-modal";
+import { StickyFooterActions } from "@/components/sticky-footer-actions";
 
 type TabId = "geral" | "itens" | "documentos";
 
@@ -177,7 +178,7 @@ export default function ResultDetailPage() {
                     </div>
 
                     {/* Actions */}
-                    <div className="flex gap-2 shrink-0">
+                    <div className="hidden md:flex gap-2 shrink-0">
                         {result.status !== "saved" && (
                             <button
                                 onClick={() => handleAction("saved")}
@@ -235,6 +236,29 @@ export default function ResultDetailPage() {
                 {activeTab === "itens" && <ItemsTab items={result.items} />}
                 {activeTab === "documentos" && <DocumentsTab documents={result.documents} cnpjOrgao={result.cnpj_orgao} anoCompra={result.ano_compra} sequencialCompra={result.sequencial_compra} />}
             </div>
+
+            <StickyFooterActions>
+                {result.status !== "saved" && (
+                    <button
+                        onClick={() => handleAction("saved")}
+                        disabled={saving}
+                        className="btn-primary"
+                    >
+                        <Bookmark className="w-4 h-4" />
+                        Salvar
+                    </button>
+                )}
+                {result.status !== "discarded" && (
+                    <button
+                        onClick={() => setDiscardConfirmOpen(true)}
+                        disabled={saving}
+                        className="btn-danger"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                        Descartar
+                    </button>
+                )}
+            </StickyFooterActions>
 
             <ConfirmModal
                 isOpen={discardConfirmOpen}

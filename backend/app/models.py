@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from typing import Optional
 
 from sqlalchemy import (
@@ -200,6 +200,54 @@ class SearchResult(Base):
     dispute_feedback: Mapped[Optional["DisputeFeedback"]] = relationship(
         back_populates="result", uselist=False, cascade="all, delete-orphan"
     )
+    alert_deliveries: Mapped[list["DisputeAlertDelivery"]] = relationship(
+        back_populates="result", cascade="all, delete-orphan"
+    )
+
+    @staticmethod
+    def _to_utc_naive(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    @property
+    def urgency_state(self) -> Optional[str]:
+        now = datetime.utcnow()
+        opening = self._to_utc_naive(self.data_abertura_proposta)
+        closing = self._to_utc_naive(self.data_encerramento_proposta)
+
+        if opening and closing and opening > closing:
+            return "unknown_dates"
+        if opening is None and closing is None:
+            return "unknown_dates"
+        if opening is not None and now < opening:
+            return "upcoming"
+        if opening is None:
+            if closing is not None and now >= closing:
+                return "closed_window"
+            return "unknown_dates"
+        if closing is not None:
+            if now >= closing:
+                return "closed_window"
+            if (closing - now).total_seconds() <= 24 * 60 * 60:
+                return "closing_soon"
+        return "open"
+
+    @property
+    def time_to_open_seconds(self) -> Optional[int]:
+        opening = self._to_utc_naive(self.data_abertura_proposta)
+        if opening is None:
+            return None
+        return int((opening - datetime.utcnow()).total_seconds())
+
+    @property
+    def time_to_close_seconds(self) -> Optional[int]:
+        closing = self._to_utc_naive(self.data_encerramento_proposta)
+        if closing is None:
+            return None
+        return int((closing - datetime.utcnow()).total_seconds())
 
     __table_args__ = (
         Index("idx_search_results_user_found_at", "user_id", "found_at"),
@@ -432,6 +480,38 @@ class Notification(Base):
 
     __table_args__ = (
         CheckConstraint("channel IN ('in_app', 'email', 'whatsapp', 'push')"),
+    )
+
+
+class DisputeAlertDelivery(Base):
+    __tablename__ = "dispute_alert_deliveries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("search_results.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    alert_type: Mapped[str] = mapped_column(String, nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    notification_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("notifications.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    result: Mapped["SearchResult"] = relationship(back_populates="alert_deliveries")
+
+    __table_args__ = (
+        UniqueConstraint("result_id", "alert_type", "scheduled_for"),
+        Index("idx_dispute_alert_deliveries_user_sent", "user_id", "sent_at"),
+        Index("idx_dispute_alert_deliveries_result", "result_id"),
+        CheckConstraint("alert_type IN ('opening_d1', 'opening_d0', 'closing_h2')"),
     )
 
 

@@ -44,6 +44,7 @@ import { getKeywordScopeLabel } from "@/lib/keyword-evidence";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
 import { ModalPortal } from "@/components/modal-portal";
 import { ConfirmModal } from "@/components/confirm-modal";
+import { StickyFooterActions } from "@/components/sticky-footer-actions";
 
 type TabId = "geral" | "itens" | "documentos" | "detalhes_edital";
 
@@ -110,7 +111,7 @@ export default function SalvoDetailPage() {
         try {
             await api.updateResultStatus(result.id, action);
             if (action === "discarded") {
-                router.push("/salvos");
+                window.location.assign("/salvos");
             } else {
                 setResult({ ...result, status: action });
             }
@@ -126,7 +127,7 @@ export default function SalvoDetailPage() {
         setDisputing(true);
         try {
             await api.startDispute(result.id);
-            router.push("/disputas");
+            window.location.assign("/disputas");
         } catch (err) {
             console.error(err);
         } finally {
@@ -240,7 +241,7 @@ export default function SalvoDetailPage() {
                     </div>
 
                     {/* Actions */}
-                    <div className="flex gap-2 shrink-0">
+                    <div className="hidden md:flex gap-2 shrink-0">
                         {result.status === "saved" && (
                             <button
                                 onClick={handleStartDispute}
@@ -316,6 +317,27 @@ export default function SalvoDetailPage() {
                     <EditalDetailsTab analysis={linkedAnalysis} />
                 )}
             </div>
+
+            <StickyFooterActions>
+                {result.status === "saved" && (
+                    <button
+                        onClick={handleStartDispute}
+                        disabled={disputing}
+                        className="btn-primary"
+                    >
+                        <Scale className="w-4 h-4" />
+                        {disputing ? "Enviando..." : "Disputar Edital"}
+                    </button>
+                )}
+                <button
+                    onClick={() => setDiscardConfirmOpen(true)}
+                    disabled={saving}
+                    className="btn-danger"
+                >
+                    <Trash2 className="w-4 h-4" />
+                    Remover
+                </button>
+            </StickyFooterActions>
 
             {/* Analysis Modal */}
             {showAnalysisModal && analyzingDocId && (
@@ -1024,8 +1046,19 @@ function AnalysisModal({
             <div
                 className="fixed inset-0 z-50 flex items-center justify-center"
                 style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-                onClick={(e) => { if (e.target === e.currentTarget && (result || error)) onClose(); }}
             >
+                <button
+                    type="button"
+                    className="absolute inset-0"
+                    aria-label="Fechar análise com IA"
+                    onClick={result || error ? onClose : undefined}
+                    onKeyDown={(event) => {
+                        if ((event.key === "Enter" || event.key === " ") && (result || error)) {
+                            event.preventDefault();
+                            onClose();
+                        }
+                    }}
+                />
                 <div
                     className="rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
                     style={{ background: "var(--color-bg-card)", border: "1px solid var(--color-border)" }}
